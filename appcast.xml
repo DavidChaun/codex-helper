@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Codex Helper</title>
+        <item>
+            <title>1.7.0</title>
+            <pubDate>Fri, 18 Sep 2026 11:32:08 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>36</sparkle:version>
+            <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.7.0
+
+- 加入 Sparkle 自动更新。
+- 增加“检查更新…”菜单项。
+- WorkBuddy 账号累计使用 100 积分后自动轮转，并跳过当前模型仍在冷却期的账号。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.7.0/Codex-Helper-Swift-1.7.0.zip" length="1887572" type="application/octet-stream" sparkle:edSignature="BXpO6U6uil7SSzvhGNu+BWGRjyv78yqBRvfHWZJH3M/A7Gx6d0QcPlaK+flWcocQqYbBNkJ4gXAM7Ey9nyEUCQ=="/>
+        </item>
+    </channel>
+</rss>
