@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.7.2</title>
+            <pubDate>Sun, 20 Sep 2026 17:47:20 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>38</sparkle:version>
+            <sparkle:shortVersionString>1.7.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.7.2
+
+- 账号池展示每个账号的剩余积分。
+- 账号池展示真实的模型限流状态、受限模型数量和最近恢复时间。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.7.2/Codex-Helper-Swift-1.7.2.zip" length="1890559" type="application/octet-stream" sparkle:edSignature="f3OaUU1lE6IInSp8Zb0pcV3ovWhgY9Mu3kUfHxWC5UrukcusrFfkzu6Y9jFNHy/U+lu8eVjKpz34bkCxiWSLDg=="/>
+        </item>
+        <item>
             <title>1.7.1</title>
             <pubDate>Sun, 20 Sep 2026 10:27:23 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
