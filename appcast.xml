@@ -3,6 +3,22 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.0</title>
+            <pubDate>Tue, 22 Sep 2026 16:35:03 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>39</sparkle:version>
+            <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.0
+
+- 新增 Trae 独立代理、账号池、签到、积分和模型倍率展示。
+- WorkBuddy 与 Trae 共用 58100 端口，分别使用 `/workbuddy/v1` 和 `/trae/v1`。
+- 两个代理可在各自“更多…”菜单独立启停，并支持复制 curl 示例。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.0/Codex-Helper-Swift-1.8.0.zip" length="2075345" type="application/octet-stream" sparkle:edSignature="gMEtkSt2Eoz25waHwZd1sxyMTbczXy9FfuZDuqI1lkqqP4MBmGVLbNLHJodX73ZTR1T3KvMRZZKw/R+97HClDg=="/>
+        </item>
+        <item>
             <title>1.7.2</title>
             <pubDate>Sun, 20 Sep 2026 17:47:20 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
