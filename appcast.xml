@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.1</title>
+            <pubDate>Tue, 22 Sep 2026 16:58:54 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>40</sparkle:version>
+            <sparkle:shortVersionString>1.8.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.1
+
+- WorkBuddy 与 Trae 账号凭据改用本地 plist 保存，避免 Keychain 密码弹窗。
+- 当前账号和账号池的余额单位统一显示为“积分”。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.1/Codex-Helper-Swift-1.8.1.zip" length="2076557" type="application/octet-stream" sparkle:edSignature="1tAm5t8f8RCF4r7DGBFxv1qtYIX+QkYHthjbWb/H/IVb/jR7i1PIlanw1+425WGDll02ios83OJwxCRpvynYDg=="/>
+        </item>
+        <item>
             <title>1.8.0</title>
             <pubDate>Tue, 22 Sep 2026 16:35:03 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
