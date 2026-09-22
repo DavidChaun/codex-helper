@@ -3,6 +3,20 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.2</title>
+            <pubDate>Tue, 22 Sep 2026 17:53:07 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>41</sparkle:version>
+            <sparkle:shortVersionString>1.8.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.2
+
+- Trae usage 现已映射缓存读取、缓存写入和推理 Token，OpenCodex 可正确展示这些统计。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.2/Codex-Helper-Swift-1.8.2.zip" length="2079199" type="application/octet-stream" sparkle:edSignature="y6lylXawHIwrThMTUCbDerLi3E78kjvx12Wh/A81KyK3BCP0zHWT6vQ6+jisO+HEoggdTphwezir8rIWFuOVAw=="/>
+        </item>
+        <item>
             <title>1.8.1</title>
             <pubDate>Tue, 22 Sep 2026 16:58:54 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
