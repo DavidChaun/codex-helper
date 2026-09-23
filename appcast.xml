@@ -3,6 +3,20 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.3</title>
+            <pubDate>Wed, 23 Sep 2026 10:07:45 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>42</sparkle:version>
+            <sparkle:shortVersionString>1.8.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.3
+
+- 保存 WorkBuddy 账号时会替换同名旧记录，避免账号池出现重复或不可用账号。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.3/Codex-Helper-Swift-1.8.3.zip" length="2080908" type="application/octet-stream" sparkle:edSignature="2hnede/sWFkXcsMZ9PC1vr23tfUWbD/f/wKuUt4jSxO9m6oXv48c93rqWGAg1Um5R2uPYEa+vmlQn1qRH78SBQ=="/>
+        </item>
+        <item>
             <title>1.8.2</title>
             <pubDate>Tue, 22 Sep 2026 17:53:07 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
