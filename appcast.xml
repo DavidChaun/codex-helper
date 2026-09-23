@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.4</title>
+            <pubDate>Wed, 23 Sep 2026 10:40:59 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>43</sparkle:version>
+            <sparkle:shortVersionString>1.8.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.4
+
+- Trae 自动签到失败后每 10 分钟重试，避免一次失败导致当天不再签到。
+- Mac 唤醒后立即检查 Trae 签到状态。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.4/Codex-Helper-Swift-1.8.4.zip" length="2081444" type="application/octet-stream" sparkle:edSignature="GUmdMOW7LEJdQXBOlgV1njL6Emb5Jz5mLyYASdOv3icKHlEIbdPgR19kyZZWJ6njit6XNYQJlaY4Ku9vTz4FAA=="/>
+        </item>
+        <item>
             <title>1.8.3</title>
             <pubDate>Wed, 23 Sep 2026 10:07:45 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
