@@ -25,7 +25,7 @@
 - 同一个 `127.0.0.1:58100` 监听同时提供 Trae：`GET /trae/v1/models`、`POST /trae/v1/chat/completions`，本机 API Key 为 `trae-local`，OpenCodex 的 `trae` provider 指向 `http://127.0.0.1:58100/trae/v1`。登录态从 Trae 账号池取用（见下节），模型表来自 `get_detail_param`，对话走 `llm_utils_chat`（`function=solo_work_lite`）并把 `output.response`/`reasoning_content`/`tool_calls` 转成 OpenAI SSE。Trae 图形界面无需运行，但必须已登录 `/Applications/TRAE SOLO CN.app`；登录态失效会由上游 401 暴露，需要在 Trae 内重新登录。该 `trae` provider 不会写 `max_tokens` 默认值，只转发请求里显式给定的值。
 - 两条路由各自独立开关：WorkBuddy 与 Trae 在自己的菜单区块分别显示 `Running` / `Stop`，并在各自「更多…」中提供默认勾选的「启用代理」。关闭其中一个只停用它的路由（该前缀返回 404），另一个照常服务；两个都关闭时才停掉 listener。路径不匹配任何前缀时一律 404，不会在两家 provider 之间回退。`/health` 始终可用，并回报两条路由的开关状态。
 - 共享代理的启动条件：WorkBuddy 功能开启且已装 CLI，或 Trae 功能开启且本机装了 `/Applications/TRAE SOLO CN.app` / 留有 Trae 登录态，两者满足其一即可。
-- WorkBuddy 一级菜单依次显示代理状态、当前账号剩余积分、账号池和「更多…」。余额直接使用 WorkBuddy 新版 `get-user-resource-summary` 口径；「更多…」包含代理开关、curl 示例、签到、自动签到、刷新及带倍率的模型列表。Trae 的「更多…」提供同类操作。
+- WorkBuddy 一级菜单依次显示代理状态、当前账号剩余积分、账号池和「更多…」。余额直接使用 WorkBuddy 新版 `get-user-resource-summary` 口径；「更多…」包含代理开关、curl 示例、签到、自动签到、刷新及带倍率的模型列表。Trae 的「更多…」提供同类操作。点击聊天模型会发送一条简短请求测速，显示完整响应耗时：低于 2 秒绿色、低于 5 秒黄色，其余红色；请求失败标红，测速会消耗少量积分。
 - 开启代理执行 `ocx restart`、`ocx restore back`、`ocx sync --restart-codex`；关闭代理先恢复原生配置并重启 Codex app-server，再执行 `ocx stop`、`ocx restore`。切换时会刷新 model list，也可能中断正在运行的 Codex 任务。
 - 「控制台」调用 `ocx gui`。
 

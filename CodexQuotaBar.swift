@@ -138,6 +138,14 @@ func shouldAutoCheckinTrae(_ state: TraeCheckinState, lastAttempt: Double?, now:
     return state.checkinActive && !state.checkedIn && !state.didCheckedIn && !recentlyAttempted
 }
 
+func modelLatencyTier(_ seconds: Double) -> Int { seconds < 2 ? 0 : (seconds < 5 ? 1 : 2) }
+
+private enum ModelLatency {
+    case measuring
+    case measured(Double)
+    case failed(Double)
+}
+
 func runCommand(_ name: String, _ arguments: [String], timeout: TimeInterval? = nil) throws -> String {
     guard let path = executable(named: name) else { throw QueryError.missingCLI }
     let process = Process(), output = Pipe()
@@ -294,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var workBuddyError: String?
     var workBuddyBusy = false
     var traeModels: [TraeModel] = []
+    private var modelLatencies: [String: ModelLatency] = [:]
     var traeState: TraeCheckinState?
     var traeCreditsByAccount: [String: TraeCredits] = [:]
     var traeError: String?
@@ -514,6 +523,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             item.isEnabled = true
             menu.addItem(item)
         }
+        func showLatency(_ item: NSMenuItem, service: String, id: String) {
+            guard let result = modelLatencies["\(service):\(id)"] else { return }
+            let suffix: String
+            let color: NSColor
+            switch result {
+            case .measuring:
+                item.title += " · 测速中…"
+                item.isEnabled = false
+                return
+            case .measured(let seconds):
+                suffix = String(format: " · %.2fs", seconds)
+                color = [.systemGreen, .systemYellow, .systemRed][modelLatencyTier(seconds)]
+            case .failed(let seconds):
+                suffix = String(format: " · %.2fs · 失败", seconds)
+                color = .systemRed
+            }
+            let start = (item.title as NSString).length
+            item.title += suffix
+            let title = NSMutableAttributedString(string: item.title)
+            title.addAttribute(.foregroundColor, value: color,
+                               range: NSRange(location: start, length: (suffix as NSString).length))
+            item.attributedTitle = title
+        }
         let codexInstalled = codexExecutable() != nil
         let ocxInstalled = executable(named: "ocx") != nil
         let workBuddyInstalled = workBuddyCLIInstalled
@@ -595,11 +627,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         } else { workBuddyInfo("签到状态暂不可用") }
         let modelsItem = NSMenuItem(title: "模型列表（\(workBuddyModels.count)）", action: nil, keyEquivalent: "")
         let modelsMenu = NSMenu()
+        modelsMenu.autoenablesItems = false
         for model in workBuddyModels {
             let rate = model.credits.flatMap { $0.isEmpty ? nil : $0 } ?? "未标注倍率"
-            let item = NSMenuItem(title: "\(model.name) · \(rate)", action: nil, keyEquivalent: "")
-            item.toolTip = model.id
-            item.isEnabled = false
+            let item = NSMenuItem(title: "\(model.name) · \(rate)", action: #selector(measureModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ["service": "workbuddy", "id": model.id]
+            item.toolTip = model.type == "chat" ? "\(model.id) · 点击测速，会消耗少量积分" : "\(model.id) · 该模型不支持聊天测速"
+            item.isEnabled = model.type == "chat"
+            if model.type == "chat" { showLatency(item, service: "workbuddy", id: model.id) }
             modelsMenu.addItem(item)
         }
         if workBuddyModels.isEmpty {
@@ -673,11 +709,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         traeMoreMenu.addItem(traeCheckinInfo)
         let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
         let traeModelsMenu = NSMenu()
+        traeModelsMenu.autoenablesItems = false
         for model in traeModels {
             let item = NSMenuItem(title: "\(model.name) · \(model.multiplier ?? "未提供倍率")",
-                                  action: nil, keyEquivalent: "")
-            item.toolTip = model.id
-            item.isEnabled = false
+                                  action: #selector(measureModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ["service": "trae", "id": model.id]
+            item.toolTip = "\(model.id) · 点击测速，会消耗少量积分"
+            showLatency(item, service: "trae", id: model.id)
             traeModelsMenu.addItem(item)
         }
         if traeModels.isEmpty {
@@ -778,6 +817,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if !ocxBusy { refreshOcxStatus() }
         if workBuddyEnabled, !workBuddyBusy { refreshWorkBuddy(autoClaim: true) }
         if traeEnabled, !traeBusy { refreshTrae(autoClaim: true) }
+    }
+
+    @objc func measureModel(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let service = info["service"], let id = info["id"],
+              service == "workbuddy" || service == "trae" else { return }
+        let key = "\(service):\(id)"
+        if case .measuring? = modelLatencies[key] { return }
+        modelLatencies[key] = .measuring
+        render()
+        let started = ProcessInfo.processInfo.systemUptime
+        let request: [String: Any] = ["model": id, "messages": [["role": "user", "content": "请只回复 OK"]], "stream": true]
+        var streamFailed = false
+        let onData: (Data) -> Void = { data in
+            if String(data: data, encoding: .utf8)?.contains("upstream_error") == true { streamFailed = true }
+        }
+        let completion: (Error?) -> Void = { [weak self] error in
+            let seconds = ProcessInfo.processInfo.systemUptime - started
+            let failed = error != nil || streamFailed
+            DispatchQueue.main.async {
+                self?.modelLatencies[key] = failed ? .failed(seconds) : .measured(seconds)
+                self?.render()
+            }
+        }
+        if service == "workbuddy" {
+            workBuddyClient.chat(request, onStart: {}, onData: onData, completion: completion)
+        } else if service == "trae" {
+            traeClient.chat(request, onStart: {}, onData: onData, completion: completion)
+        }
     }
 
     @objc func refreshWorkBuddyNow() { refreshWorkBuddy() }
@@ -1233,6 +1301,8 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!shouldAutoCheckinTrae(TraeCheckinState(checkedIn: true, didCheckedIn: true,
                                                         checkinActive: true, baseCredit: 0, bonusCredit: 0),
                                        lastAttempt: nil))
+    precondition(modelLatencyTier(1.99) == 0 && modelLatencyTier(2) == 1)
+    precondition(modelLatencyTier(4.99) == 1 && modelLatencyTier(5) == 2)
     precondition(openCodexInstallCommand.contains("npm install -g @bitkyc08/opencodex"))
     precondition(workBuddyInstallURL.hasPrefix("https://"))
     precondition(setup.first?.joined(separator: " ").contains("http://127.0.0.1:58100/workbuddy/v1") == true)
