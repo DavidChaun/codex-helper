@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.6</title>
+            <pubDate>Thu, 24 Sep 2026 18:47:22 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>45</sparkle:version>
+            <sparkle:shortVersionString>1.8.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.6
+
+- WorkBuddy 与 Trae 的 Chat Completions 接口支持非流式响应：省略 `stream` 或设为 `false` 时返回 JSON，`true` 保持 SSE。
+- 非流式结果保留正文、工具调用、结束原因及上游提供的用量；流内错误返回 JSON 错误。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.6/Codex-Helper-Swift-1.8.6.zip" length="2113432" type="application/octet-stream" sparkle:edSignature="xqo3Mx2Xqm5q8Cw4rHyQeniFZwE7cMAhwQqriCUe63l+C3EC5b8CbhxgYffl2Suzoa2IIL+yroMReY9hoM37CQ=="/>
+        </item>
+        <item>
             <title>1.8.5</title>
             <pubDate>Thu, 24 Sep 2026 13:43:30 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>

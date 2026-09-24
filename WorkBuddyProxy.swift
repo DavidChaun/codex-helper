@@ -25,6 +25,88 @@ private struct ProxyRequest {
     let body: Data
 }
 
+private func chatWantsStream(_ body: [String: Any]) -> Bool { body["stream"] as? Bool == true }
+
+private final class ChatCompletionCollector {
+    private var pending = ""
+    private var id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    private var created = Int(Date().timeIntervalSince1970)
+    private var model: String
+    private var message: [String: Any] = ["role": "assistant"]
+    private var calls: [Int: [String: Any]] = [:]
+    private var finishReason: String?
+    private var usage: [String: Any]?
+    private var sawChoice = false
+    private var sawDone = false
+    private(set) var errorMessage: String?
+
+    init(model: String) { self.model = model }
+
+    func consume(_ data: Data) {
+        pending += String(decoding: data, as: UTF8.self)
+        while let end = pending.firstIndex(of: "\n") {
+            let line = String(pending[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            pending.removeSubrange(...end)
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { sawDone = true; continue }
+            guard let frame = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else {
+                errorMessage = "Invalid upstream stream"
+                continue
+            }
+            if let error = frame["error"] as? [String: Any] {
+                errorMessage = error["message"] as? String ?? "Upstream stream failed"
+                continue
+            }
+            if let value = frame["id"] as? String { id = value }
+            if let value = frame["created"] as? Int { created = value }
+            if let value = frame["model"] as? String { model = value }
+            if let value = frame["usage"] as? [String: Any] { usage = value }
+            guard let choice = (frame["choices"] as? [[String: Any]])?.first else { continue }
+            sawChoice = true
+            if let value = choice["finish_reason"] as? String { finishReason = value }
+            guard let delta = choice["delta"] as? [String: Any] else { continue }
+            if let role = delta["role"] as? String { message["role"] = role }
+            for key in ["content", "reasoning_content", "refusal"] {
+                if let value = delta[key] as? String {
+                    message[key] = (message[key] as? String ?? "") + value
+                }
+            }
+            if let function = delta["function_call"] as? [String: String] {
+                var merged = message["function_call"] as? [String: String] ?? [:]
+                for (key, value) in function { merged[key] = (merged[key] ?? "") + value }
+                message["function_call"] = merged
+            }
+            for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
+                let index = call["index"] as? Int ?? 0
+                var merged = calls[index] ?? ["type": "function"]
+                for key in ["id", "type"] {
+                    if let value = call[key] as? String { merged[key] = value }
+                }
+                if let function = call["function"] as? [String: String] {
+                    var parts = merged["function"] as? [String: String] ?? [:]
+                    for (key, value) in function { parts[key] = (parts[key] ?? "") + value }
+                    merged["function"] = parts
+                }
+                calls[index] = merged
+            }
+        }
+    }
+
+    func result() -> [String: Any]? {
+        guard sawChoice, finishReason != nil || sawDone, errorMessage == nil else { return nil }
+        var output = message
+        if output["content"] == nil { output["content"] = NSNull() }
+        if !calls.isEmpty { output["tool_calls"] = calls.keys.sorted().compactMap { calls[$0] } }
+        var response: [String: Any] = [
+            "id": id, "object": "chat.completion", "created": created, "model": model,
+            "choices": [["index": 0, "message": output, "finish_reason": finishReason ?? "stop"]],
+        ]
+        if let usage { response["usage"] = usage }
+        return response
+    }
+}
+
 final class WorkBuddyProxy {
     static var port: Int { Int(proxyPort) }
 
@@ -166,14 +248,10 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            streamChat(connection, body)
+            chat(connection, body) { client.chat(body, onStart: $0, onData: $1, completion: $2) }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
-    }
-
-    private func streamChat(_ connection: NWConnection, _ body: [String: Any]) {
-        stream(connection) { client.chat(body, onStart: $0, onData: $1, completion: $2) }
     }
 
     private func handleTrae(_ connection: NWConnection, _ request: ProxyRequest) {
@@ -198,10 +276,30 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            stream(connection) { traeClient.chat(body, onStart: $0, onData: $1, completion: $2) }
+            chat(connection, body) { traeClient.chat(body, onStart: $0, onData: $1, completion: $2) }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
+    }
+
+    private func chat(_ connection: NWConnection, _ body: [String: Any],
+                      _ produce: (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
+        if chatWantsStream(body) { stream(connection, produce); return }
+        let collector = ChatCompletionCollector(model: body["model"] as? String ?? "unknown")
+        produce({}, { collector.consume($0) }, { [weak self] error in
+            if let error {
+                self?.sendJSON(connection, status: 502,
+                               ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
+            } else if let message = collector.errorMessage {
+                self?.sendJSON(connection, status: 502,
+                               ["error": ["message": message, "type": "upstream_error"]])
+            } else if let result = collector.result() {
+                self?.sendJSON(connection, result)
+            } else {
+                self?.sendJSON(connection, status: 502,
+                               ["error": ["message": "Empty upstream response", "type": "upstream_error"]])
+            }
+        })
     }
 
     // 两个上游共用同一段 SSE 框架：启动时写 200 头，随后逐块整编，最后补结束块。
@@ -235,7 +333,7 @@ final class WorkBuddyProxy {
 
     private func sendJSON(_ connection: NWConnection, status: Int = 200, _ value: Any) {
         let body = (try? workBuddyJSONData(value)) ?? Data("{}".utf8)
-        let reason = status == 200 ? "OK" : (status == 401 ? "Unauthorized" : (status == 404 ? "Not Found" : "Error"))
+        let reason = status == 200 ? "OK" : (status == 401 ? "Unauthorized" : (status == 404 ? "Not Found" : (status == 502 ? "Bad Gateway" : "Error")))
         var data = Data("HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
         data.append(body)
         connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
@@ -243,6 +341,43 @@ final class WorkBuddyProxy {
 
     static func selfTest() {
         precondition(String(data: httpChunk(Data("abc".utf8)), encoding: .utf8) == "3\r\nabc\r\n")
+
+        // 非流式默认值与 SSE 聚合：跨块 JSON、正文、工具调用和 usage 都不能丢。
+        precondition(!chatWantsStream([:]))
+        precondition(!chatWantsStream(["stream": false]))
+        precondition(chatWantsStream(["stream": true]))
+        let collector = ChatCompletionCollector(model: "fallback")
+        collector.consume(Data("data: {".utf8))
+        collector.consume(Data("\"id\":\"chatcmpl-test\",\"created\":1,\"model\":\"test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你\"},\"finish_reason\":null}]}\n".utf8))
+        collector.consume(Data("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n".utf8))
+        collector.consume(Data("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":3}}\n\ndata: [DONE]\n\n".utf8))
+        let result = collector.result()
+        let choice = (result?["choices"] as? [[String: Any]])?.first
+        let message = choice?["message"] as? [String: Any]
+        precondition(result?["object"] as? String == "chat.completion")
+        precondition(result?["id"] as? String == "chatcmpl-test")
+        precondition(result?["model"] as? String == "test")
+        precondition(message?["content"] as? String == "你好")
+        precondition(choice?["finish_reason"] as? String == "tool_calls")
+        let call = (message?["tool_calls"] as? [[String: Any]])?.first
+        precondition(call?["id"] as? String == "call_1")
+        precondition((call?["function"] as? [String: String])?["arguments"] == "{}")
+        precondition((result?["usage"] as? [String: Any])?["total_tokens"] as? Int == 3)
+        let failed = ChatCompletionCollector(model: "test")
+        failed.consume(Data("data: {\"error\":{\"message\":\"upstream failed\"}}\n\n".utf8))
+        precondition(failed.errorMessage == "upstream failed" && failed.result() == nil)
+        let truncated = ChatCompletionCollector(model: "test")
+        truncated.consume(Data("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n".utf8))
+        precondition(truncated.result() == nil)
+        var trae = TraeStreamTranslator(model: "glm-test")
+        let traeResult = ChatCompletionCollector(model: "fallback")
+        for line in ["event:output", "data:{\"response\":\"OK\"}",
+                     "event:done", "data:{\"finish_reason\":\"stop\"}"] {
+            if let chunk = trae.consume(line) { traeResult.consume(chunk) }
+        }
+        if let tail = trae.finish() { traeResult.consume(tail) }
+        let traeChoice = (traeResult.result()?["choices"] as? [[String: Any]])?.first
+        precondition((traeChoice?["message"] as? [String: Any])?["content"] as? String == "OK")
 
         // 路由状态互不影响：关一个不影响另一个，两个都关才停 listener。
         var state = ProxyRouteState()
