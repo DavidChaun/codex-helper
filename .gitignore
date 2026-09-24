@@ -1,3 +1,9 @@
 *.zip
 *.delta
 old_updates/
+.DS_Store
+.build/
+Codex Helper.app/
+main
+Vendor/Sparkle/bin/*
+!Vendor/Sparkle/bin/sign_update
