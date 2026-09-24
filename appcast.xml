@@ -3,6 +3,22 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.5</title>
+            <pubDate>Thu, 24 Sep 2026 13:43:30 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>44</sparkle:version>
+            <sparkle:shortVersionString>1.8.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.5
+
+- WorkBuddy 与 Trae 的模型列表移到账号池旁，点击模型后菜单保持打开并直接显示响应耗时。
+- 测速结果按绿色、棕色、红色区分；模型菜单收窄并补齐边距。
+- 移除菜单中的更新时间和「立即刷新」，后台自动刷新不受影响。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.5/Codex-Helper-Swift-1.8.5.zip" length="2093276" type="application/octet-stream" sparkle:edSignature="w4PVhNMFaZj0QHn35BTpqRG2hcZaQyuLtRsvVnhZHdc7Y+V+MDdUWlXRseYGFjfbED27HYMGn7fvIiyRVNW7DQ=="/>
+        </item>
+        <item>
             <title>1.8.4</title>
             <pubDate>Wed, 23 Sep 2026 10:40:59 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>

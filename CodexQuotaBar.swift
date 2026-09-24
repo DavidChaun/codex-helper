@@ -146,6 +146,60 @@ private enum ModelLatency {
     case failed(Double)
 }
 
+private final class ModelProbeButton: NSButton {
+    let service: String
+    let modelID: String
+    private let baseTitle: String
+    private let canMeasure: Bool
+
+    init(service: String, modelID: String, title: String, canMeasure: Bool) {
+        self.service = service
+        self.modelID = modelID
+        baseTitle = title
+        self.canMeasure = canMeasure
+        let font = NSFont.menuFont(ofSize: 0)
+        let width = min(600, ceil(((title + " · 300.00s ✕") as NSString).size(withAttributes: [.font: font]).width + 8))
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 24))
+        isBordered = false
+        alignment = .left
+        self.font = font
+        toolTip = canMeasure ? "点击测速，会消耗少量积分" : "该模型不支持聊天测速"
+        show(nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func show(_ result: ModelLatency?) {
+        let suffix: String
+        let color: NSColor?
+        switch result {
+        case .none:
+            suffix = ""
+            color = nil
+        case .measuring:
+            suffix = " · 测速中…"
+            color = nil
+        case .measured(let seconds):
+            suffix = String(format: " · %.2fs", seconds)
+            color = [.systemGreen, .systemBrown, .systemRed][modelLatencyTier(seconds)]
+        case .failed(let seconds):
+            suffix = String(format: " · %.2fs ✕", seconds)
+            color = .systemRed
+        }
+        title = baseTitle + suffix
+        let text = NSMutableAttributedString(string: title)
+        if let color {
+            text.addAttribute(.foregroundColor, value: color,
+                              range: NSRange(location: (baseTitle as NSString).length,
+                                             length: (suffix as NSString).length))
+        }
+        attributedTitle = text
+        if case .measuring? = result { isEnabled = false }
+        else { isEnabled = canMeasure }
+    }
+}
+
 func runCommand(_ name: String, _ arguments: [String], timeout: TimeInterval? = nil) throws -> String {
     guard let path = executable(named: name) else { throw QueryError.missingCLI }
     let process = Process(), output = Pipe()
@@ -303,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var workBuddyBusy = false
     var traeModels: [TraeModel] = []
     private var modelLatencies: [String: ModelLatency] = [:]
+    private var menuTracking = false
     var traeState: TraeCheckinState?
     var traeCreditsByAccount: [String: TraeCredits] = [:]
     var traeError: String?
@@ -506,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         status.button?.attributedTitle = NSAttributedString(string: title, attributes: attributes)
         status.button?.toolTip = "Codex 剩余额度 · 点击查看重置时间" + (stale ? "（上次数据，尚未更新）" : "")
         status.button?.setAccessibilityLabel("Codex 剩余额度 " + (quota?.title ?? "暂不可用"))
+        if menuTracking { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
@@ -523,28 +579,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             item.isEnabled = true
             menu.addItem(item)
         }
-        func showLatency(_ item: NSMenuItem, service: String, id: String) {
-            guard let result = modelLatencies["\(service):\(id)"] else { return }
-            let suffix: String
-            let color: NSColor
-            switch result {
-            case .measuring:
-                item.title += " · 测速中…"
-                item.isEnabled = false
-                return
-            case .measured(let seconds):
-                suffix = String(format: " · %.2fs", seconds)
-                color = [.systemGreen, .systemYellow, .systemRed][modelLatencyTier(seconds)]
-            case .failed(let seconds):
-                suffix = String(format: " · %.2fs · 失败", seconds)
-                color = .systemRed
-            }
-            let start = (item.title as NSString).length
-            item.title += suffix
-            let title = NSMutableAttributedString(string: item.title)
-            title.addAttribute(.foregroundColor, value: color,
-                               range: NSRange(location: start, length: (suffix as NSString).length))
-            item.attributedTitle = title
+        func modelProbeItem(service: String, id: String, title: String, canMeasure: Bool = true) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let button = ModelProbeButton(service: service, modelID: id, title: title, canMeasure: canMeasure)
+            button.target = self
+            button.action = #selector(measureModel(_:))
+            button.show(modelLatencies["\(service):\(id)"])
+            let row = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 32, height: 24))
+            button.frame.origin.x = 16
+            row.addSubview(button)
+            item.view = row
+            return item
         }
         let codexInstalled = codexExecutable() != nil
         let ocxInstalled = executable(named: "ocx") != nil
@@ -570,16 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(.separator())
         if let error = error { info("⚠ " + error) }
         if stale, quota != nil { info("显示上次结果，请刷新后确认") }
-        if let updated = updated {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss"
-            info("更新于 \(formatter.string(from: updated)) · 每\(Int(refreshInterval))秒刷新")
-        }
-        let refreshItem = NSMenuItem(title: refreshing || workBuddyBusy ? "正在刷新…" : "立即刷新", action: #selector(refreshAll), keyEquivalent: "r")
-        refreshItem.target = self
-        refreshItem.isEnabled = !(refreshing && workBuddyBusy)
-        menu.addItem(refreshItem)
-        menu.addItem(.separator())
+        if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
     if workBuddyEnabled {
         info("WorkBuddy Proxy " + (workBuddyProxy.isWorkBuddyRunning ? "Running" : "Stop"))
         if let state = workBuddyState, let remaining = state.remaining {
@@ -611,6 +647,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         accountsMenu.addItem(importAccount)
         accountsItem.submenu = accountsMenu
         menu.addItem(accountsItem)
+        let modelsItem = NSMenuItem(title: "模型列表（\(workBuddyModels.count)）", action: nil, keyEquivalent: "")
+        let modelsMenu = NSMenu()
+        modelsMenu.autoenablesItems = false
+        for model in workBuddyModels {
+            let rate = model.credits.flatMap { $0.isEmpty ? nil : $0 } ?? "未标注倍率"
+            modelsMenu.addItem(modelProbeItem(service: "workbuddy", id: model.id,
+                                              title: "\(model.name) · \(rate)", canMeasure: model.type == "chat"))
+        }
+        if workBuddyModels.isEmpty {
+            let item = NSMenuItem(title: "暂无模型数据", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            modelsMenu.addItem(item)
+        }
+        modelsItem.submenu = modelsMenu
+        menu.addItem(modelsItem)
         let moreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let moreMenu = NSMenu()
         let proxyEnabled = NSMenuItem(title: "启用代理", action: #selector(toggleWorkBuddyProxy), keyEquivalent: "")
@@ -625,26 +676,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let state = workBuddyState {
             workBuddyInfo(state.checkedIn ? "今日已签到 · 连续 \(state.streakDays) 天" : "今日待签到 · +\(state.todayCredit.formatted()) 积分")
         } else { workBuddyInfo("签到状态暂不可用") }
-        let modelsItem = NSMenuItem(title: "模型列表（\(workBuddyModels.count)）", action: nil, keyEquivalent: "")
-        let modelsMenu = NSMenu()
-        modelsMenu.autoenablesItems = false
-        for model in workBuddyModels {
-            let rate = model.credits.flatMap { $0.isEmpty ? nil : $0 } ?? "未标注倍率"
-            let item = NSMenuItem(title: "\(model.name) · \(rate)", action: #selector(measureModel(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ["service": "workbuddy", "id": model.id]
-            item.toolTip = model.type == "chat" ? "\(model.id) · 点击测速，会消耗少量积分" : "\(model.id) · 该模型不支持聊天测速"
-            item.isEnabled = model.type == "chat"
-            if model.type == "chat" { showLatency(item, service: "workbuddy", id: model.id) }
-            modelsMenu.addItem(item)
-        }
-        if workBuddyModels.isEmpty {
-            let item = NSMenuItem(title: "暂无模型数据", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            modelsMenu.addItem(item)
-        }
-        modelsItem.submenu = modelsMenu
-        moreMenu.addItem(modelsItem)
         let curl = NSMenuItem(title: "复制 curl 示例", action: #selector(copyInstallInstruction(_:)), keyEquivalent: "")
         curl.target = self
         curl.representedObject = workBuddyCurlExample(model: workBuddyModels.first(where: { $0.type == "chat" })?.id ?? "glm-5.3")
@@ -690,6 +721,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         traeAccountsMenu.addItem(importTrae)
         traeAccountsItem.submenu = traeAccountsMenu
         menu.addItem(traeAccountsItem)
+        let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
+        let traeModelsMenu = NSMenu()
+        traeModelsMenu.autoenablesItems = false
+        for model in traeModels {
+            traeModelsMenu.addItem(modelProbeItem(service: "trae", id: model.id,
+                                                  title: "\(model.name) · \(model.multiplier ?? "未提供倍率")"))
+        }
+        if traeModels.isEmpty {
+            let item = NSMenuItem(title: traeError ?? (traeBusy ? "正在读取…" : "暂无模型数据"),
+                                  action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            traeModelsMenu.addItem(item)
+        }
+        traeModelsItem.submenu = traeModelsMenu
+        menu.addItem(traeModelsItem)
         let traeMoreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let traeMoreMenu = NSMenu()
         let traeProxyEnabled = NSMenuItem(title: "启用代理", action: #selector(toggleTraeProxy), keyEquivalent: "")
@@ -707,26 +753,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let traeCheckinInfo = NSMenuItem(title: checkinText, action: nil, keyEquivalent: "")
         traeCheckinInfo.isEnabled = false
         traeMoreMenu.addItem(traeCheckinInfo)
-        let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
-        let traeModelsMenu = NSMenu()
-        traeModelsMenu.autoenablesItems = false
-        for model in traeModels {
-            let item = NSMenuItem(title: "\(model.name) · \(model.multiplier ?? "未提供倍率")",
-                                  action: #selector(measureModel(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ["service": "trae", "id": model.id]
-            item.toolTip = "\(model.id) · 点击测速，会消耗少量积分"
-            showLatency(item, service: "trae", id: model.id)
-            traeModelsMenu.addItem(item)
-        }
-        if traeModels.isEmpty {
-            let item = NSMenuItem(title: traeError ?? (traeBusy ? "正在读取…" : "暂无模型数据"),
-                                  action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            traeModelsMenu.addItem(item)
-        }
-        traeModelsItem.submenu = traeModelsMenu
-        traeMoreMenu.addItem(traeModelsItem)
         let traeCurl = NSMenuItem(title: "复制 curl 示例", action: #selector(copyInstallInstruction(_:)), keyEquivalent: "")
         traeCurl.target = self
         traeCurl.representedObject = traeCurlExample(model: traeModels.first?.id ?? traeDefaultModel)
@@ -814,31 +840,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        menuTracking = true
         if !ocxBusy { refreshOcxStatus() }
         if workBuddyEnabled, !workBuddyBusy { refreshWorkBuddy(autoClaim: true) }
         if traeEnabled, !traeBusy { refreshTrae(autoClaim: true) }
     }
 
-    @objc func measureModel(_ sender: NSMenuItem) {
-        guard let info = sender.representedObject as? [String: String],
-              let service = info["service"], let id = info["id"],
-              service == "workbuddy" || service == "trae" else { return }
+    func menuDidClose(_ menu: NSMenu) {
+        menuTracking = false
+        render()
+    }
+
+    @objc func measureModel(_ sender: NSButton) {
+        guard let button = sender as? ModelProbeButton, button.isEnabled else { return }
+        let service = button.service, id = button.modelID
         let key = "\(service):\(id)"
         if case .measuring? = modelLatencies[key] { return }
         modelLatencies[key] = .measuring
-        render()
+        button.show(.measuring)
         let started = ProcessInfo.processInfo.systemUptime
         let request: [String: Any] = ["model": id, "messages": [["role": "user", "content": "请只回复 OK"]], "stream": true]
         var streamFailed = false
         let onData: (Data) -> Void = { data in
             if String(data: data, encoding: .utf8)?.contains("upstream_error") == true { streamFailed = true }
         }
-        let completion: (Error?) -> Void = { [weak self] error in
+        let completion: (Error?) -> Void = { [weak self, weak button] error in
             let seconds = ProcessInfo.processInfo.systemUptime - started
             let failed = error != nil || streamFailed
-            DispatchQueue.main.async {
-                self?.modelLatencies[key] = failed ? .failed(seconds) : .measured(seconds)
-                self?.render()
+            RunLoop.main.perform(inModes: [.common, .eventTracking]) { [weak self] in
+                let result: ModelLatency = failed ? .failed(seconds) : .measured(seconds)
+                self?.modelLatencies[key] = result
+                button?.show(result)
             }
         }
         if service == "workbuddy" {
