@@ -1,4 +1,30 @@
 import Foundation
+import zlib
+
+private func workBuddyGunzip(_ data: Data) -> Data? {
+    var stream = z_stream()
+    guard inflateInit2_(&stream, 16 + MAX_WBITS, ZLIB_VERSION,
+                        Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+    defer { inflateEnd(&stream) }
+    var input = [UInt8](data)
+    return input.withUnsafeMutableBufferPointer { source -> Data? in
+        stream.next_in = source.baseAddress
+        stream.avail_in = uInt(source.count)
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let status = buffer.withUnsafeMutableBufferPointer { target -> Int32 in
+                stream.next_out = target.baseAddress
+                stream.avail_out = uInt(target.count)
+                return inflate(&stream, Z_NO_FLUSH)
+            }
+            guard status == Z_OK || status == Z_STREAM_END else { return nil }
+            result.append(contentsOf: buffer.prefix(buffer.count - Int(stream.avail_out)))
+            guard result.count <= 10_000_000 else { return nil }
+            if status == Z_STREAM_END { return result }
+        }
+    }
+}
 
 struct WorkBuddyModel {
     let id: String
@@ -130,18 +156,30 @@ final class WorkBuddyClient {
         let files = (try? manager.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         for file in files.filter({ $0.lastPathComponent.hasPrefix("entry_") && $0.pathExtension == "info" })
             .sorted(by: { ($0.contentModificationDate ?? .distantPast) > ($1.contentModificationDate ?? .distantPast) }) {
-            guard let value = try? JSONSerialization.jsonObject(with: Data(contentsOf: file)) else { continue }
-            for entry in (value as? [[String: Any]]) ?? ((value as? [String: Any]).map { [$0] } ?? []) {
-                if let data = entry["data"] as? [String: Any], let models = data["models"] as? [[String: Any]], !models.isEmpty {
-                    return models.compactMap(WorkBuddyModel.init)
-                }
-            }
+            guard let value = try? JSONSerialization.jsonObject(with: Data(contentsOf: file), options: [.fragmentsAllowed]) else { continue }
+            if let models = Self.cachedModels(value) { return models }
         }
         guard let root = try JSONSerialization.jsonObject(with: Data(contentsOf: workBuddyProductURL)) as? [String: Any],
               let models = root["models"] as? [[String: Any]] else {
             throw WorkBuddyError.message("WorkBuddy model catalog not found")
         }
         return models.compactMap(WorkBuddyModel.init)
+    }
+
+    private static func cachedModels(_ value: Any) -> [WorkBuddyModel]? {
+        if let text = value as? String,
+           let compressed = Data(base64Encoded: text),
+           let decoded = workBuddyGunzip(compressed),
+           let root = try? JSONSerialization.jsonObject(with: decoded) as? [String: Any],
+           let models = root["models"] as? [[String: Any]], !models.isEmpty {
+            return models.compactMap(WorkBuddyModel.init)
+        }
+        for entry in (value as? [[String: Any]]) ?? ((value as? [String: Any]).map { [$0] } ?? []) {
+            if let data = entry["data"] as? [String: Any], let models = data["models"] as? [[String: Any]], !models.isEmpty {
+                return models.compactMap(WorkBuddyModel.init)
+            }
+        }
+        return nil
     }
 
     func snapshot(accountID: String? = nil) throws -> WorkBuddyAccountState {
@@ -355,6 +393,9 @@ final class WorkBuddyClient {
         precondition(summaryRemaining(["data": ["Packages": [
             ["CycleRemainCapacity": "2400.25"], ["CycleRemainCapacity": 43.5]
         ]]]) == 2443.75)
+        let compressed = "H4sIAAAAAAAAA6tWys1PSc0pVrKKrlbKTFGyUkpJTS0oTk3N1i0z0TPUTctJLM5Q0lHKS8xNBUq6wCTDQJJuUMnkotSUzBKgGUoVBnqGhkq1sbUAyNQhK1gAAAA="
+        precondition(cachedModels(compressed)?.first?.credits == "x0.11")
+        precondition(cachedModels([["data": ["models": [["id": "old", "credits": "x0.03"]]]]])?.first?.credits == "x0.03")
     }
 }
 

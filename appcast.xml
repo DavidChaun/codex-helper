@@ -3,6 +3,20 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.7</title>
+            <pubDate>Mon, 28 Sep 2026 16:10:22 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>46</sparkle:version>
+            <sparkle:shortVersionString>1.8.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.7
+
+- 识别 WorkBuddy 新版压缩模型缓存，让模型列表和 `/models` 在刷新后显示最新倍率；保留旧缓存格式回退。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.7/Codex-Helper-Swift-1.8.7.zip" length="2118005" type="application/octet-stream" sparkle:edSignature="mintJiDkqVgRUWRFzfYFgZxWOcs7YLvmzfIrai0CVnuY4HRD/bX4qg9JkYIXBKnfoC7BuM0WqRfLVsvZmCvAAA=="/>
+        </item>
+        <item>
             <title>1.8.6</title>
             <pubDate>Thu, 24 Sep 2026 18:47:22 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>

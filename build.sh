@@ -23,8 +23,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Codex Helper</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>45</string>
-<key>CFBundleShortVersionString</key><string>1.8.6</string>
+<key>CFBundleVersion</key><string>46</string>
+<key>CFBundleShortVersionString</key><string>1.8.7</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSHighResolutionCapable</key><true/>
