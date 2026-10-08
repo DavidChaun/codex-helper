@@ -200,13 +200,15 @@ private final class ModelProbeButton: NSButton {
     }
 }
 
-func runCommand(_ name: String, _ arguments: [String], timeout: TimeInterval? = nil) throws -> String {
+func runCommand(_ name: String, _ arguments: [String], timeout: TimeInterval? = nil,
+                includeStandardError: Bool = true) throws -> String {
     guard let path = executable(named: name) else { throw QueryError.missingCLI }
     let process = Process(), output = Pipe()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
     process.standardOutput = output
     process.standardError = output
+    if !includeStandardError { process.standardError = FileHandle.nullDevice }
     var environment = ProcessInfo.processInfo.environment
     environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
     process.environment = environment
@@ -1173,14 +1175,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
         ocxChecking = true
         DispatchQueue.global(qos: .utility).async {
-            let result = Result { try runCommand("ocx", ["health", "--json"], timeout: 5) }
+            let result = Result { try runCommand("ocx", ["health", "--json"], timeout: 5, includeStandardError: false) }
             DispatchQueue.main.async {
                 self.ocxChecking = false
                 switch result {
                 case .success(let health):
                     let running = health.data(using: .utf8)
-                        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["ok"] as? Bool ?? false
-                    self.ocxStatusText = running ? "OpenCodex Running" : "OpenCodex Stop"
+                        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["ok"] as? Bool
+                    self.ocxStatusText = running.map { $0 ? "OpenCodex Running" : "OpenCodex Stop" } ?? "OpenCodex 状态不可用"
                 case .failure:
                     self.ocxStatusText = "OpenCodex 状态不可用"
                 }
@@ -1335,6 +1337,9 @@ if CommandLine.arguments.contains("--self-test") {
                                        lastAttempt: nil))
     precondition(modelLatencyTier(1.99) == 0 && modelLatencyTier(2) == 1)
     precondition(modelLatencyTier(4.99) == 1 && modelLatencyTier(5) == 2)
+    let cleanHealth = try runCommand("sh", ["-c", "printf '%s' '{\"ok\":true}'; printf '%s' warning >&2"],
+                                     timeout: 5, includeStandardError: false)
+    precondition(cleanHealth == "{\"ok\":true}")
     precondition(openCodexInstallCommand.contains("npm install -g @bitkyc08/opencodex"))
     precondition(workBuddyInstallURL.hasPrefix("https://"))
     precondition(setup.first?.joined(separator: " ").contains("http://127.0.0.1:58100/workbuddy/v1") == true)
