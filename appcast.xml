@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.8</title>
+            <pubDate>Mon, 12 Oct 2026 15:26:22 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>47</sparkle:version>
+            <sparkle:shortVersionString>1.8.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.8
+
+- 优先读取 WorkBuddy 最新合并模型配置，支持新的缓存前缀并保留旧格式兼容，让 Step-5 等新模型及倍率随客户端配置更新。
+- 修复 OpenCodex 健康检查被警告输出干扰，导致运行中误显示 Stop 的问题。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.8/Codex-Helper-Swift-1.8.8.zip" length="2122026" type="application/octet-stream" sparkle:edSignature="YrOWJwpba7ZhXQRkBVAkjj5vzx7pbXEAfePyku+4PPDJkfBQZe0VCbe6WYh+uWMeV/Gi3W/7kdonfxSRCSqSCg=="/>
+        </item>
+        <item>
             <title>1.8.7</title>
             <pubDate>Mon, 28 Sep 2026 16:10:22 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
