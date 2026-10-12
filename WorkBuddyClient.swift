@@ -152,9 +152,13 @@ final class WorkBuddyClient {
 
     func models() throws -> [WorkBuddyModel] {
         let manager = FileManager.default
+        let current = manager.homeDirectoryForCurrentUser.appendingPathComponent(".workbuddy/cache/acc-product-config-v3.json")
+        if let data = try? Data(contentsOf: current),
+           let value = try? JSONSerialization.jsonObject(with: data),
+           let models = Self.cachedModels(value) { return models }
         let cache = manager.homeDirectoryForCurrentUser.appendingPathComponent(".workbuddy/local_storage")
         let files = (try? manager.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        for file in files.filter({ $0.lastPathComponent.hasPrefix("entry_") && $0.pathExtension == "info" })
+        for file in files.filter({ ($0.lastPathComponent.hasPrefix("entry_") || $0.lastPathComponent.hasPrefix("wb_entry_")) && $0.pathExtension == "info" })
             .sorted(by: { ($0.contentModificationDate ?? .distantPast) > ($1.contentModificationDate ?? .distantPast) }) {
             guard let value = try? JSONSerialization.jsonObject(with: Data(contentsOf: file), options: [.fragmentsAllowed]) else { continue }
             if let models = Self.cachedModels(value) { return models }
@@ -167,6 +171,10 @@ final class WorkBuddyClient {
     }
 
     private static func cachedModels(_ value: Any) -> [WorkBuddyModel]? {
+        if let root = value as? [String: Any], let models = root["models"] as? [[String: Any]], !models.isEmpty {
+            let parsed = models.compactMap(WorkBuddyModel.init)
+            if !parsed.isEmpty { return parsed }
+        }
         if let text = value as? String,
            let compressed = Data(base64Encoded: text),
            let decoded = workBuddyGunzip(compressed),
@@ -396,6 +404,11 @@ final class WorkBuddyClient {
         let compressed = "H4sIAAAAAAAAA6tWys1PSc0pVrKKrlbKTFGyUkpJTS0oTk3N1i0z0TPUTctJLM5Q0lHKS8xNBUq6wCTDQJJuUMnkotSUzBKgGUoVBnqGhkq1sbUAyNQhK1gAAAA="
         precondition(cachedModels(compressed)?.first?.credits == "x0.11")
         precondition(cachedModels([["data": ["models": [["id": "old", "credits": "x0.03"]]]]])?.first?.credits == "x0.03")
+        let currentModels = cachedModels(["models": [["id": "step-5-preview", "name": "Step-5-Preview", "credits": "x0.00"]]])
+        precondition(currentModels?.first?.id == "step-5-preview")
+        precondition(currentModels?.first?.credits == "x0.00")
+        precondition(cachedModels(["models": []]) == nil)
+        precondition(cachedModels(["models": [["name": "invalid"]]]) == nil)
     }
 }
 
