@@ -388,6 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(self, selector: #selector(debugLogFailed(_:)),
+                                               name: ProxyDebugLog.failureNotification, object: nil)
         if let id = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 {
             NSApp.terminate(nil)
@@ -834,6 +836,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let settings = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        let debug = NSMenuItem(title: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
+        debug.target = self
+        debug.state = ProxyDebugLog.enabled ? .on : .off
+        debug.toolTip = "仅本次运行有效；记录完整请求文本到 ~/Downloads/CodexHelper-Debug，可能包含私人内容"
+        menu.addItem(debug)
+        if ProxyDebugLog.enabled {
+            let logs = NSMenuItem(title: "打开 Debug 日志目录", action: #selector(openDebugLogs), keyEquivalent: "")
+            logs.target = self
+            menu.addItem(logs)
+        }
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 Codex Helper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
@@ -846,6 +858,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if !ocxBusy { refreshOcxStatus() }
         if workBuddyEnabled, !workBuddyBusy { refreshWorkBuddy(autoClaim: true) }
         if traeEnabled, !traeBusy { refreshTrae(autoClaim: true) }
+    }
+
+    @objc func toggleDebugMode() {
+        if !ProxyDebugLog.enabled {
+            let alert = NSAlert()
+            alert.messageText = "开启 Debug Mode？"
+            alert.informativeText = "将完整请求文本、工具定义和错误写入 ~/Downloads/CodexHelper-Debug。可能包含私人对话和代码；鉴权头及二进制内容不记录，但文本中的敏感信息无法全部自动识别。关闭或重启应用后停止记录，已有文件需手动清理。"
+            alert.addButton(withTitle: "开启")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        ProxyDebugLog.enabled.toggle()
+        render()
+    }
+
+    @objc func openDebugLogs() {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: ProxyDebugLog.directory.path)
+    }
+
+    @objc func debugLogFailed(_ notification: Notification) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Debug Mode 已关闭"
+        alert.informativeText = notification.userInfo?["error"] as? String ?? "无法写入日志，代理请求不受影响。"
+        alert.runModal()
+        render()
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -1361,6 +1399,7 @@ if CommandLine.arguments.contains("--self-test") {
     WorkBuddyClient.selfTest()
     WorkBuddyAccountPool.selfTest()
     WorkBuddyProxy.selfTest()
+    try ProxyDebugLog.selfTest()
     TraeClient.selfTest()
     TraeAccountPool.selfTest()
     print("PASS: 配额解析、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")

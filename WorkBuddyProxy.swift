@@ -248,7 +248,9 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            chat(connection, body) { client.chat(body, onStart: $0, onData: $1, completion: $2) }
+            let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body,
+                                            callerID: request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"])
+            chat(connection, body, debug: debug) { self.client.chat(body, debug: debug, onStart: $0, onData: $1, completion: $2) }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
@@ -276,14 +278,19 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            chat(connection, body) { traeClient.chat(body, onStart: $0, onData: $1, completion: $2) }
+            let debug = ProxyDebugLog.begin(provider: "trae", body: body,
+                                            callerID: request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"])
+            chat(connection, body, debug: debug) { self.traeClient.chat(body, debug: debug, onStart: $0, onData: $1, completion: $2) }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
     }
 
-    private func chat(_ connection: NWConnection, _ body: [String: Any],
-                      _ produce: (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
+    private func chat(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?,
+                      _ upstream: @escaping (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
+        let produce: (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void = { start, data, done in
+            upstream(start, { chunk in debug?.observe(chunk); data(chunk) }, { error in debug?.finish(error); done(error) })
+        }
         if chatWantsStream(body) { stream(connection, produce); return }
         let collector = ChatCompletionCollector(model: body["model"] as? String ?? "unknown")
         produce({}, { collector.consume($0) }, { [weak self] error in

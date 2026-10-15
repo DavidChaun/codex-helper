@@ -698,14 +698,14 @@ final class TraeClient {
         return traeModelMultipliers(root)
     }
 
-    func chat(_ source: [String: Any], onStart: @escaping () -> Void,
+    func chat(_ source: [String: Any], debug: ProxyDebugLog? = nil, onStart: @escaping () -> Void,
               onData: @escaping (Data) -> Void, completion: @escaping (Error?) -> Void) {
         Task {
             do {
                 var lastAccountError: Error?
                 for context in try accounts.contexts() {
                     do {
-                        try await streamRequest(source, context: context,
+                        try await streamRequest(source, context: context, debug: debug,
                                                 onStart: onStart, onData: onData)
                         accounts.markUsed(accountID: context.id)
                         completion(nil)
@@ -721,7 +721,7 @@ final class TraeClient {
         }
     }
 
-    private func streamRequest(_ source: [String: Any], context: TraeAccountContext,
+    private func streamRequest(_ source: [String: Any], context: TraeAccountContext, debug: ProxyDebugLog?,
                                onStart: @escaping () -> Void,
                                onData: @escaping (Data) -> Void) async throws {
         let body = traeUpstreamBody(source)
@@ -729,13 +729,16 @@ final class TraeClient {
                                   accept: "text/event-stream")
         request.httpBody = try workBuddyJSONData(body)
         request.timeoutInterval = 300
+        debug?.record("upstream request (each attempt)", ["path": "/api/agent/v3/llm_utils_chat", "body": body])
         let (bytes, rawResponse) = try await URLSession.shared.bytes(for: request)
         guard let response = rawResponse as? HTTPURLResponse else {
             throw TraeError.message("Trae 响应无效")
         }
+        debug?.upstream(status: response.statusCode)
         guard (200..<300).contains(response.statusCode) else {
             var data = Data()
             for try await byte in bytes { data.append(byte) }
+            debug?.upstream(status: response.statusCode, errorBody: data)
             // 流未开始：账号级错误交给外层换号，其余原样抛出。
             throw TraeError.account(status: response.statusCode,
                                     detail: traeUpstreamMessage(data) ?? "Trae 返回 HTTP \(response.statusCode)")

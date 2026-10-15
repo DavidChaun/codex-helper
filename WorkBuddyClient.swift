@@ -127,7 +127,7 @@ final class WorkBuddyClient {
         self.accounts = accounts
     }
 
-    func chat(_ source: [String: Any], onStart: @escaping () -> Void,
+    func chat(_ source: [String: Any], debug: ProxyDebugLog? = nil, onStart: @escaping () -> Void,
               onData: @escaping (Data) -> Void, completion: @escaping (Error?) -> Void) {
         Task {
             do {
@@ -135,7 +135,7 @@ final class WorkBuddyClient {
                 var lastLimit: WorkBuddyRateLimit?
                 for context in try accounts.contexts(for: model) {
                     do {
-                        try await request(source, context: context, retryAfterRefresh: true,
+                        try await request(source, context: context, retryAfterRefresh: true, debug: debug,
                                           onStart: onStart, onData: onData)
                         accounts.markSuccess(accountID: context.id, model: model)
                         completion(nil)
@@ -226,22 +226,25 @@ final class WorkBuddyClient {
         return context
     }
 
-    private func request(_ source: [String: Any], context: WorkBuddyAccountContext, retryAfterRefresh: Bool,
+    private func request(_ source: [String: Any], context: WorkBuddyAccountContext, retryAfterRefresh: Bool, debug: ProxyDebugLog?,
                          onStart: @escaping () -> Void, onData: @escaping (Data) -> Void) async throws {
         let body = upstreamBody(source)
         let request = try makeRequest(context: context, route: "/v2/chat/completions", body: body, accountAPI: false)
+        debug?.record("upstream request (each attempt)", ["path": "/v2/chat/completions", "body": body])
         let (bytes, rawResponse) = try await URLSession.shared.bytes(for: request)
         guard let response = rawResponse as? HTTPURLResponse else {
             throw WorkBuddyError.message("Invalid HTTP response")
         }
+        debug?.upstream(status: response.statusCode)
         if response.statusCode == 401, retryAfterRefresh {
             let fresh = try refresh(context)
-            return try await self.request(source, context: fresh, retryAfterRefresh: false,
+            return try await self.request(source, context: fresh, retryAfterRefresh: false, debug: debug,
                                           onStart: onStart, onData: onData)
         }
         guard (200..<300).contains(response.statusCode) else {
             var data = Data()
             for try await byte in bytes { data.append(byte) }
+            debug?.upstream(status: response.statusCode, errorBody: data)
             let message = upstreamMessage(data) ?? "WorkBuddy model returned HTTP \(response.statusCode)"
             if Self.isRateLimit(status: response.statusCode, message: message) {
                 throw WorkBuddyRateLimit(message: message, resetAt: Self.resetDate(in: message) ?? Date().addingTimeInterval(300))

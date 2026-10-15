@@ -9,7 +9,7 @@ mkdir -p ".build/swift-cache"
 swiftc -swift-version 5 -module-cache-path ".build/swift-cache" -F Vendor/Sparkle \
   -framework AppKit -framework Network -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  CodexQuotaBar.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddyProxy.swift TraeClient.swift TraeAccountPool.swift -o ".build/CodexQuotaBar"
+  CodexQuotaBar.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddyProxy.swift ProxyDebugLog.swift TraeClient.swift TraeAccountPool.swift -o ".build/CodexQuotaBar"
 cp ".build/CodexQuotaBar" "$app/Contents/MacOS/CodexQuotaBar"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 ditto Vendor/Sparkle/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"
@@ -23,8 +23,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Codex Helper</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>47</string>
-<key>CFBundleShortVersionString</key><string>1.8.8</string>
+<key>CFBundleVersion</key><string>48</string>
+<key>CFBundleShortVersionString</key><string>1.8.9</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSHighResolutionCapable</key><true/>

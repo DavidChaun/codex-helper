@@ -39,6 +39,14 @@
 - 「每日自动签到」会依次检查账号池中的全部账号，每个账号每天最多自动尝试一次；单个账号失败不会阻断其他账号。手动「立即签到」只操作当前优先账号。
 - 账号元数据和 Token 明文保存在 `~/Library/Application Support/Codex Helper/wb-accounts.plist`（权限 `0600`）。Codex Helper 不会主动切换或覆盖 WorkBuddy App 当前登录的账号。
 
+## Debug Mode
+
+菜单中的「Debug Mode」默认关闭，仅本次运行有效，重启应用后恢复关闭。开启后每条经过本地代理的 Chat 请求保存为 `~/Downloads/CodexHelper-Debug/提供商/模型/时间戳_唯一ID.txt`；「打开 Debug 日志目录」可直接查看。
+
+日志包含 Helper 收到的完整文本请求（系统提示词、历史消息、工具定义和参数）、每次上游尝试实际发送的 JSON、HTTP 状态、上游错误正文和响应耗时；不保存完整回答。只能看到 OpenCodex 转换后交给 Helper 的请求，无法还原转换前的 Claude Desktop 原始请求。调用方传入 `X-Request-ID` 或 `X-OCX-Request-ID` 时一并保存，否则使用本地 ID。
+
+鉴权头不记录；结构化凭据字段会隐藏，Base64 图片／文件／音频内容省略。目录与文件权限分别为 `0700` / `0600`。**文本中仍可能含有私人对话、代码或敏感信息**，不要未经检查分享日志。关闭开关立即停止写入，已有文件不会自动删除，请在分析后手动清理。写盘失败会自动关闭 Debug Mode 并提示，不影响代理请求。
+
 ## Trae 多账号行为
 
 Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Application Support/Codex Helper/trae-accounts.plist`（权限 `0600`），与 WorkBuddy 完全隔离，两边切号互不影响。

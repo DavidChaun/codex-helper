@@ -3,6 +3,23 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.9</title>
+            <pubDate>Thu, 15 Oct 2026 09:47:34 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>48</sparkle:version>
+            <sparkle:shortVersionString>1.8.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.9
+
+- 新增默认关闭、仅本次运行有效的 Debug Mode，按提供商、模型和时间保存日志到 `~/Downloads/CodexHelper-Debug/`。
+- 支持 WorkBuddy 与 Trae，记录收到及发出的请求、上游状态、错误和耗时，不保存完整回答。
+- 不记录鉴权头，隐藏结构化凭据并省略二进制内容；写入失败自动关闭日志，不影响代理请求。
+- 日志仍可能包含私人对话和代码，请检查后再分享，分析后手动清理。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.9/Codex-Helper-Swift-1.8.9.zip" length="2154549" type="application/octet-stream" sparkle:edSignature="mCjZYDudxqHnUqteoV7ForhootZz6z4dqgXzIb4x/VGBUBi8AXcwfqkpNA9JxeAXdb+TWcekh9zT4FhVgnhUAg=="/>
+        </item>
+        <item>
             <title>1.8.8</title>
             <pubDate>Mon, 12 Oct 2026 15:26:22 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
