@@ -334,18 +334,24 @@ final class WorkBuddyClient {
 
     private func sanitizeBlockedTemplates(_ body: inout [String: Any]) {
         guard var messages = body["messages"] as? [[String: Any]] else { return }
-        func clean(_ value: String) -> String {
-            value.replacingOccurrences(of: "You are Claude Code, Anthropic's official CLI for Claude.",
+        func clean(_ value: String, role: String?) -> String {
+            var value = value
+            if role == "system" || role == "developer" {
+                value = value.replacingOccurrences(
+                    of: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+                    with: "You are Claude Code, Anthropic's official CLI tool for Claude.")
+            }
+            return value.replacingOccurrences(of: "You are Claude Code, Anthropic's official CLI for Claude.",
                                        with: "You are Claude Code, Anthropic's official CLI tool for Claude.")
                 .replacingOccurrences(of: "Main branch (you will usually use this for PRs)",
                                       with: "Default branch (you will usually use this for PRs)")
         }
         for index in messages.indices {
             if let content = messages[index]["content"] as? String {
-                messages[index]["content"] = clean(content)
+                messages[index]["content"] = clean(content, role: messages[index]["role"] as? String)
             } else if var parts = messages[index]["content"] as? [[String: Any]] {
                 for part in parts.indices where parts[part]["text"] is String {
-                    parts[part]["text"] = clean(parts[part]["text"] as! String)
+                    parts[part]["text"] = clean(parts[part]["text"] as! String, role: messages[index]["role"] as? String)
                 }
                 messages[index]["content"] = parts
             }
@@ -398,6 +404,23 @@ final class WorkBuddyClient {
         precondition(body["reasoning_effort"] as? String == "high")
         precondition(((body["messages"] as? [[String: Any]])?.first?["content"] as? String)?.contains("CLI tool") == true)
         precondition((body["tools"] as? [[String: Any]])?.count == 1)
+        let desktopIdentity = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+        let cliIdentity = "You are Claude Code, Anthropic's official CLI tool for Claude."
+        let rules = "\nFollow workspace rules. Refuse unsafe requests."
+        let desktopTools: [[String: Any]] = [["type": "function", "function": ["name": "mcp__ccd_test"]]]
+        let desktop = client.upstreamBody([
+            "model": "deepseek-v4.1-flash", "max_tokens": 64000, "tools": desktopTools,
+            "messages": [["role": "system", "content": desktopIdentity + rules],
+                         ["role": "developer", "content": [["type": "text", "text": desktopIdentity]]],
+                         ["role": "user", "content": desktopIdentity]]
+        ])
+        let messages = desktop["messages"] as! [[String: Any]]
+        precondition(messages[0]["content"] as? String == cliIdentity + rules)
+        precondition((messages[1]["content"] as? [[String: String]])?.first?["text"] == cliIdentity)
+        precondition(messages[2]["content"] as? String == desktopIdentity)
+        precondition(NSArray(array: desktop["tools"] as! [Any]).isEqual(to: desktopTools))
+        precondition(desktop["max_tokens"] as? Int == 64000)
+        precondition(NSDictionary(dictionary: client.upstreamBody(desktop)).isEqual(to: desktop))
         precondition(isRateLimit(status: 500, message: "您的使用量已超出频率限制"))
         precondition(!isRateLimit(status: 500, message: "普通服务器错误"))
         precondition(resetDate(in: "将在 2026-09-11 19:13:41 UTC+8 重置") != nil)

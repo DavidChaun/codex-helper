@@ -3,6 +3,21 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.10</title>
+            <pubDate>Thu, 15 Oct 2026 10:18:42 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper</link>
+            <sparkle:version>49</sparkle:version>
+            <sparkle:shortVersionString>1.8.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.10
+
+- 补齐 WorkBuddy 转发中 Claude Desktop／Agent SDK 身份句的兼容替换，仅处理 system／developer 消息，不改工具定义、安全要求和模型参数。
+- 已由用户在原失败的 Claude Desktop 场景验证可用；保留现有 Claude Code CLI 处理。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.10/Codex-Helper-Swift-1.8.10.zip" length="2159226" type="application/octet-stream" sparkle:edSignature="zKOxfDByiYpgFaymN02ro6PFhDMqOfRWhYRpTxIBNmFyfWnn2jeet/Xjc7JwMRyguJ5WwiMmsHnPa4EuqYchAA=="/>
+        </item>
+        <item>
             <title>1.8.9</title>
             <pubDate>Thu, 15 Oct 2026 09:47:34 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper</link>
