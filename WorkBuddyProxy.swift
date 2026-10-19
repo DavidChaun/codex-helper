@@ -27,6 +27,20 @@ private struct ProxyRequest {
 
 private func chatWantsStream(_ body: [String: Any]) -> Bool { body["stream"] as? Bool == true }
 
+private func unsupportedSearchParameter(_ body: [String: Any]) -> String? {
+    func isServerSearch(_ tool: [String: Any]) -> Bool {
+        let type = tool["type"] as? String ?? ""
+        return type == "web_search" || type.hasPrefix("web_search_") ||
+            type == "web_fetch" || type.hasPrefix("web_fetch_")
+    }
+    if let options = body["web_search_options"], !(options is NSNull) { return "web_search_options" }
+    for (index, tool) in (body["tools"] as? [[String: Any]] ?? []).enumerated() where isServerSearch(tool) {
+        return "tools[\(index)].type"
+    }
+    if let choice = body["tool_choice"] as? [String: Any], isServerSearch(choice) { return "tool_choice.type" }
+    return nil
+}
+
 private final class ChatCompletionCollector {
     private var pending = ""
     private var id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -288,6 +302,13 @@ final class WorkBuddyProxy {
 
     private func chat(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?,
                       _ upstream: @escaping (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
+        if let parameter = unsupportedSearchParameter(body) {
+            let message = "WorkBuddy / Trae 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
+            debug?.finish(NSError(domain: "CodexHelper.Proxy", code: 400, userInfo: [NSLocalizedDescriptionKey: message]))
+            sendJSON(connection, status: 400, ["error": ["message": message, "type": "invalid_request_error",
+                                                        "code": "unsupported_server_search", "param": parameter]])
+            return
+        }
         let produce: (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void = { start, data, done in
             upstream(start, { chunk in debug?.observe(chunk); data(chunk) }, { error in debug?.finish(error); done(error) })
         }
@@ -340,7 +361,7 @@ final class WorkBuddyProxy {
 
     private func sendJSON(_ connection: NWConnection, status: Int = 200, _ value: Any) {
         let body = (try? workBuddyJSONData(value)) ?? Data("{}".utf8)
-        let reason = status == 200 ? "OK" : (status == 401 ? "Unauthorized" : (status == 404 ? "Not Found" : (status == 502 ? "Bad Gateway" : "Error")))
+        let reason = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 502: "Bad Gateway"][status] ?? "Error"
         var data = Data("HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
         data.append(body)
         connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
@@ -348,6 +369,23 @@ final class WorkBuddyProxy {
 
     static func selfTest() {
         precondition(String(data: httpChunk(Data("abc".utf8)), encoding: .utf8) == "3\r\nabc\r\n")
+
+        // 按工具类型而非名称识别：普通 function 搜索工具仍由客户端 / MCP 执行。
+        precondition(unsupportedSearchParameter([:]) == nil)
+        precondition(unsupportedSearchParameter(["web_search_options": NSNull()]) == nil)
+        precondition(unsupportedSearchParameter(["web_search_options": [:]]) == "web_search_options")
+        for type in ["web_search", "web_search_preview", "web_search_20250305", "web_fetch", "web_fetch_20250910"] {
+            precondition(unsupportedSearchParameter(["tools": [["type": type]]]) == "tools[0].type")
+            precondition(unsupportedSearchParameter(["tool_choice": ["type": type]]) == "tool_choice.type")
+        }
+        let searchTools: [[String: Any]] = ["web_search", "WebSearch", "web_fetch", "mcp__search"].map {
+            ["type": "function", "function": ["name": $0, "parameters": ["type": "object", "properties": [:]]]]
+        }
+        let searchBody: [String: Any] = ["tools": searchTools,
+            "tool_choice": ["type": "function", "function": ["name": "web_search"]]]
+        precondition(unsupportedSearchParameter(searchBody) == nil)
+        precondition(unsupportedSearchParameter(["tools": searchTools + [["type": "web_search"]]]) == "tools[4].type")
+        precondition(unsupportedSearchParameter(["tool_choice": "web_search"]) == nil)
 
         // 非流式默认值与 SSE 聚合：跨块 JSON、正文、工具调用和 usage 都不能丢。
         precondition(!chatWantsStream([:]))

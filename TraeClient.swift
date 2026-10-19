@@ -174,7 +174,12 @@ func traeUpstreamBody(_ source: [String: Any]) -> [String: Any] {
     out["config_name"] = model.isEmpty ? traeDefaultModel : model
     out["model"] = out["config_name"]
     if let tools = traeTools(source["tools"]) { out["tools"] = tools }
-    if let choice = traeToolChoice(source["tool_choice"]) { out["tool_choice"] = choice }
+    if let choice = traeToolChoice(source["tool_choice"]) {
+        out["tool_choice"] = choice
+        // 上游实测会忽略 none；只有调用方明确禁用工具时才不发送工具列表。
+        if (choice as? String)?.lowercased() == "none" { out.removeValue(forKey: "tools") }
+    }
+    if let value = source["parallel_tool_calls"] { out["parallel_tool_calls"] = value }
     for key in ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"] {
         if let value = source[key] as? NSNumber { out[key] = value }
     }
@@ -229,8 +234,9 @@ func traeAssistantToolCalls(_ raw: Any?) -> [[String: Any]]? {
 // 上游 Go struct 里 tools[].function.parameters 是 string（OpenAI 是 object）。
 func traeTools(_ raw: Any?) -> [[String: Any]]? {
     guard let list = raw as? [[String: Any]] else { return nil }
-    let tools = list.compactMap { item -> [String: Any]? in
-        guard var function = item["function"] as? [String: Any] else { return nil }
+    let tools = list.map { item -> [String: Any] in
+        // 只适配 function 参数；其他工具保留原样，由上游决定是否支持。
+        guard var function = item["function"] as? [String: Any] else { return item }
         if let parameters = function["parameters"], !(parameters is String),
            let text = try? workBuddyJSONData(parameters) {
             function["parameters"] = String(data: text, encoding: .utf8)
@@ -245,18 +251,18 @@ func traeTools(_ raw: Any?) -> [[String: Any]]? {
 func traeToolChoice(_ raw: Any?) -> Any? {
     switch raw {
     case let text as String:
-        return text.lowercased() == "none" ? nil : text
+        return text
     case let object as [String: Any]:
         switch (object["type"] as? String)?.lowercased() {
         case "none":
-            return nil
+            return "none"
         case "auto", "required":
             return (object["type"] as? String)?.lowercased()
         case "function":
             let name = ((object["function"] as? [String: Any])?["name"] as? String ?? object["name"] as? String ?? "")
-            return name.isEmpty ? "auto" : name
+            return name.isEmpty ? object : name
         default:
-            return nil
+            return object
         }
     default:
         return nil
@@ -876,8 +882,31 @@ final class TraeClient {
         let tools = body["tools"] as? [[String: Any]] ?? []
         precondition((tools.first?["function"] as? [String: Any])?["parameters"] is String)
         precondition(traeUpstreamBody(["model": "", "messages": []])["model"] as? String == traeDefaultModel)
-        precondition(traeToolChoice("none") == nil)
+        precondition(traeToolChoice("none") as? String == "none")
+        precondition(traeToolChoice(["type": "none"]) as? String == "none")
         precondition(traeToolChoice(["type": "auto"]) as? String == "auto")
+        let search: [String: Any] = ["type": "web_search", "search_context_size": "low"]
+        let custom: [String: Any] = ["type": "custom", "name": "apply_patch"]
+        let mixed = traeUpstreamBody([
+            "model": "glm-5.2", "messages": [],
+            "tools": [["type": "function", "function": ["name": "mcp__search",
+                "parameters": ["type": "object", "properties": [:]]]], search, custom],
+            "tool_choice": "auto", "parallel_tool_calls": false,
+        ])
+        let mixedTools = mixed["tools"] as! [[String: Any]]
+        precondition(mixedTools.count == 3)
+        precondition((mixedTools[0]["function"] as? [String: Any])?["parameters"] is String)
+        precondition(NSDictionary(dictionary: mixedTools[1]).isEqual(to: search))
+        precondition(NSDictionary(dictionary: mixedTools[2]).isEqual(to: custom))
+        precondition(mixed["tool_choice"] as? String == "auto")
+        precondition(mixed["parallel_tool_calls"] as? Bool == false)
+        precondition(NSDictionary(dictionary: traeToolChoice(search) as! [String: Any]).isEqual(to: search))
+        for choice: Any in ["none", ["type": "none"]] {
+            var disabled = mixed
+            disabled["tool_choice"] = choice
+            let translated = traeUpstreamBody(disabled)
+            precondition(translated["tools"] == nil && translated["tool_choice"] as? String == "none")
+        }
 
         // assistant 工具调用回传：OpenAI function → 上游 function_call，无 name 的调用剔除。
         let assistant = traeMessages([[

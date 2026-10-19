@@ -29,6 +29,12 @@
 - 开启代理执行 `ocx restart`、`ocx restore back`、`ocx sync --restart-codex`；关闭代理先恢复原生配置并重启 Codex app-server，再执行 `ocx stop`、`ocx restore`。切换时会刷新 model list，也可能中断正在运行的 Codex 任务。
 - 「控制台」调用 `ocx gui`。
 
+## 工具与搜索能力
+
+WorkBuddy 和 Trae 两条 Chat Completions 代理均支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。模型返回 `tool_calls` 后，必须由客户端或 MCP 服务执行搜索，再将结果作为工具消息回传；Codex Helper 本身不执行搜索，也不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
+
+两条代理都不支持服务端内置 `web_search` / `web_fetch`。请求的 `tools` 或 `tool_choice` 使用这些类型（含 `web_search_preview`、`web_search_20250305` 等下划线后缀变体），或传入非 null 的 `web_search_options` 时，统一在发送上游请求前返回 HTTP 400，错误 `code` 为 `unsupported_server_search`，`param` 指出不支持的字段。不会静默删除工具、忽略搜索配置或返回假成功；流式与非流式请求规则相同。需要搜索时，请关闭客户端的服务端内置搜索配置，改用客户端 / MCP 执行的普通 function 搜索工具。
+
 ## WorkBuddy 多账号行为
 
 - 在 WorkBuddy 切换并登录新账号后，选择「账号池 → 保存当前 WorkBuddy 登录账号」将其加入账号池。切换 WorkBuddy 当前登录不会退出或覆盖池中已有账号；新账号不会自动加入。
@@ -48,6 +54,8 @@
 鉴权头不记录；结构化凭据字段会隐藏，Base64 图片／文件／音频内容省略。目录与文件权限分别为 `0700` / `0600`。**文本中仍可能含有私人对话、代码或敏感信息**，不要未经检查分享日志。关闭开关立即停止写入，已有文件不会自动删除，请在分析后手动清理。写盘失败会自动关闭 Debug Mode 并提示，不影响代理请求。
 
 ## Trae 多账号行为
+
+Trae 代理保留通过共同入口校验的工具顺序与定义，仅将 function 工具的参数 Schema 转成上游要求的 JSON 字符串。转发 `parallel_tool_calls`，但是否实际支持由上游决定。调用方明确指定 `tool_choice: "none"` 时不发送工具列表，因为上游实测会忽略该限制。
 
 Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Application Support/Codex Helper/trae-accounts.plist`（权限 `0600`），与 WorkBuddy 完全隔离，两边切号互不影响。
 
