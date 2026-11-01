@@ -49,6 +49,10 @@ struct Quota: Decodable {
         guard let first = buckets.first, !first.1.windows.isEmpty else { return "额度暂无" }
         return first.1.windows.map { "\($0.shortLabel): \($0.remaining)%" }.joined(separator: " · ")
     }
+    var statusBarTitle: String {
+        let separator = buckets.first?.1.windows.count == 1 ? ": " : " · "
+        return title.replacingOccurrences(of: separator, with: "\n")
+    }
 }
 
 enum QueryError: String, Error {
@@ -294,16 +298,16 @@ func readQuota() throws -> Quota {
 }
 
 func quotaRow(_ window: Window, stale: Bool) -> NSView {
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: 312, height: 76))
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 268, height: 76))
     let title = NSTextField(labelWithString: "\(window.label)额度")
     title.font = .systemFont(ofSize: 13, weight: .medium)
-    title.frame = NSRect(x: 18, y: 51, width: 145, height: 18)
+    title.frame = NSRect(x: 14, y: 51, width: 110, height: 18)
     let value = NSTextField(labelWithString: "剩余 \(window.remaining)%")
     value.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
     value.alignment = .right
-    value.frame = NSRect(x: 165, y: 51, width: 129, height: 18)
+    value.frame = NSRect(x: 124, y: 51, width: 130, height: 18)
     value.textColor = stale ? .secondaryLabelColor : window.remaining <= 10 ? .systemRed : .labelColor
-    let bar = NSProgressIndicator(frame: NSRect(x: 18, y: 32, width: 276, height: 10))
+    let bar = NSProgressIndicator(frame: NSRect(x: 14, y: 32, width: 240, height: 10))
     bar.isIndeterminate = false
     bar.minValue = 0
     bar.maxValue = 100
@@ -319,7 +323,7 @@ func quotaRow(_ window: Window, stale: Bool) -> NSView {
     let subtitle = NSTextField(labelWithString: reset)
     subtitle.font = .systemFont(ofSize: 11)
     subtitle.textColor = .secondaryLabelColor
-    subtitle.frame = NSRect(x: 18, y: 9, width: 276, height: 17)
+    subtitle.frame = NSRect(x: 14, y: 9, width: 240, height: 17)
     [title, value, bar, subtitle].forEach { view.addSubview($0) }
     return view
 }
@@ -338,6 +342,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var updated: Date?
     var error: String?
     var refreshing = false
+    private let tokenUsageReader = CodexTokenUsageReader()
+    private let tokenUsageQueue = DispatchQueue(label: "local.codex.helper.token-usage", qos: .utility)
+    private var tokenUsage: CodexTokenUsageSnapshot?
+    private var tokenUsageError: String?
+    private var tokenUsageBusy = false
+    private var tokenUsageRange: DateInterval?
+    private var tokenDateWindow: NSWindow?
+    private var tokenStartPicker: NSDatePicker?
+    private var tokenEndPicker: NSDatePicker?
     var timer: Timer?
     var workBuddyTimer: Timer?
     var traeTimer: Timer?
@@ -528,6 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     @objc func refresh() {
+        refreshTokenUsage()
         guard !refreshing else { return }
         refreshing = true
         render()
@@ -548,9 +562,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
     }
 
+    private func refreshTokenUsage() {
+        guard !tokenUsageBusy else { return }
+        tokenUsageBusy = true
+        let requestedRange = tokenUsageRange
+        tokenUsageQueue.async {
+            let result = Result { try self.tokenUsageReader.read(range: requestedRange) }
+            DispatchQueue.main.async {
+                self.tokenUsageBusy = false
+                guard self.tokenUsageRange == requestedRange else {
+                    self.refreshTokenUsage()
+                    return
+                }
+                switch result {
+                case .success(let snapshot):
+                    self.tokenUsage = snapshot
+                    self.tokenUsageError = nil
+                case .failure(let error):
+                    self.tokenUsageError = error.localizedDescription
+                }
+                self.render()
+            }
+        }
+    }
+
     func render() {
         let stale = error != nil || (updated.map { Date().timeIntervalSince($0) > max(30, refreshInterval * 3) } ?? false)
-        let title = (stale ? "⚠ " : "") + (quota?.title.replacingOccurrences(of: " · ", with: "\n") ?? (refreshing ? "正在\n读取" : "额度\n不可用"))
+        let title = (stale ? "⚠ " : "") + (quota?.statusBarTitle ?? (refreshing ? "正在\n读取" : "额度\n不可用"))
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.minimumLineHeight = 10
@@ -620,6 +658,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let error = error { info("⚠ " + error) }
         if stale, quota != nil { info("显示上次结果，请刷新后确认") }
         if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
+        info("费用估算（USD）").toolTip = "官方 API Standard / 默认 30 分钟缓存参考价，非订阅实际账单；未确认单价按 $0。"
+        if let tokenUsage {
+            for (index, period) in tokenUsage.periods.enumerated() {
+                let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
+                let periodMenu = NSMenu()
+                periodMenu.autoenablesItems = false
+                for (model, amounts) in period.models.sorted(by: {
+                    let left = period.costs[$0.key]?.total ?? 0, right = period.costs[$1.key]?.total ?? 0
+                    return left == right ? $0.key < $1.key : left > right
+                }) {
+                    let costs = period.costs[model] ?? CodexTokenCosts()
+                    let price = CodexTokenPricing.dollars(costs.total)
+                    let modelItem = NSMenuItem(title: "\(model) · \(price)", action: nil, keyEquivalent: "")
+                    let details = NSMenu()
+                    details.autoenablesItems = false
+                    for text in costs.rows(amounts: amounts) + ["缓存已计入输入", "推理已计入输出"] {
+                        let row = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+                        row.isEnabled = false
+                        details.addItem(row)
+                    }
+                    modelItem.submenu = details
+                    periodMenu.addItem(modelItem)
+                }
+                if period.models.isEmpty {
+                    let empty = NSMenuItem(title: "暂无已记录用量", action: nil, keyEquivalent: "")
+                    empty.isEnabled = false
+                    periodMenu.addItem(empty)
+                }
+                item.submenu = periodMenu
+                item.toolTip = "\(tokenUsage.timeZone) · 本周从周一开始 · 按日志模型标签分类"
+                if index == 3, let range = tokenUsageRange {
+                    let end = range.end.addingTimeInterval(-1)
+                    item.toolTip = "\(range.start.formatted(date: .numeric, time: .omitted)) 至 \(end.formatted(date: .numeric, time: .omitted))（含首尾当天）· \(tokenUsage.timeZone)"
+                }
+                menu.addItem(item)
+            }
+            info("更新于 \(tokenUsage.updated.formatted(date: .omitted, time: .standard))")
+            if tokenUsage.unreadableFiles > 0 { info("⚠ \(tokenUsage.unreadableFiles) 个文件未能读取，统计可能不完整") }
+            if tokenUsage.skippedEvents > 0 { info("⚠ \(tokenUsage.skippedEvents) 条用量缺失或异常，已跳过") }
+        } else if tokenUsageError == nil {
+            info(tokenUsageBusy ? "正在计算本地用量…" : "暂无本地用量数据")
+        }
+        if let tokenUsageError { info("⚠ Token 统计：" + tokenUsageError + (tokenUsage == nil ? "" : "（保留上次结果）")) }
+        let dateQuery = NSMenuItem(title: "按日期区间查询…", action: #selector(showTokenDateRange), keyEquivalent: "")
+        dateQuery.target = self
+        menu.addItem(dateQuery)
+        menu.addItem(.separator())
     if workBuddyEnabled {
         info("WorkBuddy Proxy " + (workBuddyProxy.isWorkBuddyRunning ? "Running" : "Stop"))
         if let state = workBuddyState, let remaining = state.remaining {
@@ -855,6 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func menuWillOpen(_ menu: NSMenu) {
         menuTracking = true
+        refreshTokenUsage()
         if !ocxBusy { refreshOcxStatus() }
         if workBuddyEnabled, !workBuddyBusy { refreshWorkBuddy(autoClaim: true) }
         if traeEnabled, !traeBusy { refreshTrae(autoClaim: true) }
@@ -1091,6 +1177,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         alert.messageText = "已复制到剪贴板"
         alert.informativeText = text
         alert.runModal()
+    }
+
+    @objc func showTokenDateRange() {
+        if let window = tokenDateWindow {
+            tokenStartPicker?.maxDate = Date()
+            tokenEndPicker?.maxDate = Date()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 160),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "按日期查询用量"
+        window.isReleasedWhenClosed = false
+        window.center()
+        guard let content = window.contentView else { return }
+        let now = Date()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let start = tokenUsageRange?.start ?? calendar.dateInterval(of: .month, for: now)!.start
+        let end = tokenUsageRange?.end.addingTimeInterval(-1) ?? now
+        for (index, name) in ["开始日期", "结束日期"].enumerated() {
+            let y = CGFloat(108 - index * 38)
+            let label = NSTextField(labelWithString: name)
+            label.frame = NSRect(x: 18, y: y, width: 74, height: 22)
+            let picker = NSDatePicker(frame: NSRect(x: 96, y: y - 2, width: 226, height: 26))
+            picker.datePickerStyle = .textFieldAndStepper
+            picker.datePickerElements = .yearMonthDay
+            picker.calendar = calendar
+            picker.timeZone = .current
+            picker.maxDate = now
+            picker.dateValue = index == 0 ? start : end
+            picker.setAccessibilityLabel(name)
+            content.addSubview(label)
+            content.addSubview(picker)
+            if index == 0 { tokenStartPicker = picker } else { tokenEndPicker = picker }
+        }
+        let hint = NSTextField(labelWithString: "包含开始和结束当天")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.frame = NSRect(x: 18, y: 23, width: 145, height: 18)
+        let cancel = NSButton(title: "取消", target: window, action: #selector(NSWindow.performClose(_:)))
+        cancel.frame = NSRect(x: 172, y: 16, width: 70, height: 30)
+        let query = NSButton(title: "查询", target: self, action: #selector(applyTokenDateRange))
+        query.frame = NSRect(x: 252, y: 16, width: 70, height: 30)
+        query.keyEquivalent = "\r"
+        [hint, cancel, query].forEach { content.addSubview($0) }
+        tokenDateWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func applyTokenDateRange() {
+        guard let start = tokenStartPicker?.dateValue, let end = tokenEndPicker?.dateValue else { return }
+        do {
+            tokenUsageRange = try CodexTokenUsageReader.dateRange(from: start, through: end)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "日期区间无效"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            return
+        }
+        tokenUsage = nil
+        tokenUsageError = nil
+        tokenDateWindow?.close()
+        refreshTokenUsage()
+        render()
     }
 
     @objc func showSettings() {
@@ -1345,17 +1499,26 @@ struct CodexHelperMain {
 static func main() throws {
 signal(SIGPIPE, SIG_IGN)
 if CommandLine.arguments.contains("--self-test") {
+    try CodexTokenUsageReader.selfTest()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
     precondition(parsed.title == "5h: 100% · 1w: 94%")
+    precondition(parsed.statusBarTitle == "5h: 100%\n1w: 94%")
     precondition(parsed.buckets[0].1.windows[1].label == "7天")
     precondition(Window(usedPercent: 110, windowDurationMins: nil, resetsAt: nil).remaining == 0)
     precondition(Window(usedPercent: -10, windowDurationMins: 60, resetsAt: nil).remaining == 100)
     precondition(Window(usedPercent: 99.1, windowDurationMins: 60, resetsAt: nil).remaining == 0)
     let legacy = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300}}}"#.utf8))
     precondition(legacy.title == "5h: 75%")
+    precondition(legacy.statusBarTitle == "5h\n75%")
+    let weekly = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":{"primary":null,"secondary":{"usedPercent":0,"windowDurationMins":10080}}}"#.utf8))
+    precondition(weekly.title == "1w: 100%")
+    precondition(weekly.statusBarTitle == "1w\n100%")
+    let weeklyPrimary = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":6,"windowDurationMins":10080}}}}"#.utf8))
+    precondition(weeklyPrimary.statusBarTitle == "1w\n94%")
     let empty = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":null,"rateLimitsByLimitId":{}}"#.utf8))
     precondition(empty.title == "额度暂无")
+    precondition(empty.statusBarTitle == "额度暂无")
     let setup = workBuddyOcxConfigurationCommands(firstConfiguration: true)
     precondition(setup.first?.contains("--force") == true)
     precondition(setup.contains(["models", "provider", "workbuddy", "on"]))
@@ -1402,7 +1565,18 @@ if CommandLine.arguments.contains("--self-test") {
     try ProxyDebugLog.selfTest()
     TraeClient.selfTest()
     TraeAccountPool.selfTest()
-    print("PASS: 配额解析、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
+    print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
+} else if CommandLine.arguments.contains("--check-token-usage") {
+    let snapshot = try CodexTokenUsageReader().read()
+    print("本机 Token 用量 · \(snapshot.timeZone) · 本周从周一开始")
+    for period in snapshot.periods {
+        print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens")
+        for (model, amounts) in period.models.sorted(by: { $0.key < $1.key }) {
+            let costs = period.costs[model] ?? CodexTokenCosts()
+            print("  \(model)：\(CodexTokenPricing.dollars(costs.total))；" + costs.rows(amounts: amounts).joined(separator: "；"))
+        }
+    }
+    print("读取失败：\(snapshot.unreadableFiles)；跳过异常或缺失用量：\(snapshot.skippedEvents)")
 } else if CommandLine.arguments.contains("--check-workbuddy") {
     let accounts = WorkBuddyAccountPool()
     let client = WorkBuddyClient(accounts: accounts)
