@@ -675,13 +675,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
                 let periodMenu = NSMenu()
                 periodMenu.autoenablesItems = false
-                for (model, amounts) in period.models.sorted(by: {
+                for (group, amounts) in period.models.sorted(by: {
                     let left = period.costs[$0.key]?.total ?? 0, right = period.costs[$1.key]?.total ?? 0
-                    return left == right ? $0.key < $1.key : left > right
+                    return left == right ? $0.key.title < $1.key.title : left > right
                 }) {
-                    let costs = period.costs[model] ?? CodexTokenCosts()
+                    let costs = period.costs[group] ?? CodexTokenCosts()
                     let price = CodexTokenPricing.dollars(costs.total)
-                    let modelItem = NSMenuItem(title: "\(model) · \(price)", action: nil, keyEquivalent: "")
+                    let modelItem = NSMenuItem(title: "\(group.title) · \(price)", action: nil, keyEquivalent: "")
                     let details = NSMenu()
                     details.autoenablesItems = false
                     for text in costs.rows(amounts: amounts) + ["缓存已计入输入", "推理已计入输出"] {
@@ -1595,9 +1595,9 @@ if CommandLine.arguments.contains("--self-test") {
     if weeklyRange == nil { print("当前周额度：周期暂不可用") }
     for period in snapshot.periods {
         print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens；\(period.interval.start) 至 \(period.interval.end)")
-        for (model, amounts) in period.models.sorted(by: { $0.key < $1.key }) {
-            let costs = period.costs[model] ?? CodexTokenCosts()
-            print("  \(model)：\(CodexTokenPricing.dollars(costs.total))；" + costs.rows(amounts: amounts).joined(separator: "；"))
+        for (group, amounts) in period.models.sorted(by: { $0.key.title < $1.key.title }) {
+            let costs = period.costs[group] ?? CodexTokenCosts()
+            print("  \(group.title)：\(CodexTokenPricing.dollars(costs.total))；" + costs.rows(amounts: amounts).joined(separator: "；"))
         }
     }
     print("读取失败：\(snapshot.unreadableFiles)；跳过异常或缺失用量：\(snapshot.skippedEvents)")

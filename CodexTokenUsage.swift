@@ -69,6 +69,24 @@ struct CodexTokenCosts {
     }
 }
 
+enum CodexTokenTier: String {
+    case standard = "标准", fast = "Fast", unknown = "未知"
+
+    init(_ recorded: String?) {
+        switch recorded {
+        case "default", "standard": self = .standard
+        case "fast", "priority": self = .fast
+        default: self = .unknown
+        }
+    }
+}
+
+struct CodexTokenUsageGroup: Hashable {
+    let model: String
+    let tier: CodexTokenTier
+    var title: String { "\(model) · \(tier.rawValue)" }
+}
+
 enum CodexTokenPricing {
     // USD / 1M tokens，2026-11-01 核对：https://developers.openai.com/api/docs/pricing
     private static let rates: [String: (input: Decimal, cached: Decimal, output: Decimal)] = [
@@ -88,11 +106,12 @@ enum CodexTokenPricing {
 
     static func breakdown(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default") -> CodexTokenCosts {
         let multiplier: Decimal
-        let label: String
-        switch serviceTier {
-        case "default", "standard": multiplier = 1; label = "标准"
-        case "fast", "priority": multiplier = 2; label = "Fast"
-        default: return CodexTokenCosts(serviceTiers: ["未知"])
+        let tier = CodexTokenTier(serviceTier)
+        let label = tier.rawValue
+        switch tier {
+        case .standard: multiplier = 1
+        case .fast: multiplier = 2
+        case .unknown: return CodexTokenCosts(serviceTiers: [label])
         }
         guard let rate = rates[model], amounts.valid,
               let uncached = amounts.uncached, let cached = amounts.cached,
@@ -119,8 +138,8 @@ enum CodexTokenPricing {
 struct CodexTokenUsagePeriod {
     let name: String
     let interval: DateInterval
-    var models: [String: CodexTokenAmounts] = [:]
-    var costs: [String: CodexTokenCosts] = [:]
+    var models: [CodexTokenUsageGroup: CodexTokenAmounts] = [:]
+    var costs: [CodexTokenUsageGroup: CodexTokenCosts] = [:]
     var estimatedUSD: Decimal { costs.values.reduce(0) { $0 + $1.total } }
     var total: CodexTokenAmounts {
         get throws { try models.values.reduce(CodexTokenAmounts()) { try $0.adding($1) } }
@@ -181,7 +200,7 @@ final class CodexTokenUsageReader {
     private struct Event {
         let identity: Identity
         let date: Date
-        let model: String
+        let group: CodexTokenUsageGroup
         let costs: CodexTokenCosts
     }
     private struct FileState {
@@ -245,7 +264,7 @@ final class CodexTokenUsageReader {
         guard date >= since, amounts.total > 0 else { return }
         state.events.append(Event(identity: Identity(timestamp: record.timestamp,
                                                      cumulative: info.total_token_usage, amounts: amounts),
-                                  date: date, model: state.model,
+                                  date: date, group: CodexTokenUsageGroup(model: state.model, tier: CodexTokenTier(state.serviceTier)),
                                   costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts,
                                                                     serviceTier: state.serviceTier)))
     }
@@ -339,9 +358,9 @@ final class CodexTokenUsageReader {
                 guard seen.insert(event.identity).inserted else { continue }
                 for index in periods.indices where event.date >= periods[index].interval.start
                     && event.date < periods[index].interval.end {
-                    periods[index].models[event.model] = try (periods[index].models[event.model] ?? CodexTokenAmounts())
+                    periods[index].models[event.group] = try (periods[index].models[event.group] ?? CodexTokenAmounts())
                         .adding(event.identity.amounts)
-                    periods[index].costs[event.model] = (periods[index].costs[event.model] ?? CodexTokenCosts())
+                    periods[index].costs[event.group] = (periods[index].costs[event.group] ?? CodexTokenCosts())
                         .adding(event.costs)
                 }
             }
@@ -390,6 +409,11 @@ extension CodexTokenUsageReader {
         let now = ISO8601DateFormatter().date(from: "2026-11-01T08:00:00Z")!
         let zone = TimeZone(identifier: "Asia/Shanghai")!
         let reader = CodexTokenUsageReader(root: root)
+        let unknownA = CodexTokenUsageGroup(model: "gpt-a", tier: .unknown)
+        let unrecorded = CodexTokenUsageGroup(model: "未记录模型", tier: .unknown)
+        let standardSol = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .standard)
+        let fastSol = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .fast)
+        let unknownSol = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .unknown)
         let cycleStart = ISO8601DateFormatter().date(from: "2026-10-28T12:00:00Z")!
         let cycle = DateInterval(start: cycleStart, duration: 7 * 24 * 60 * 60)
         let first = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
@@ -397,10 +421,10 @@ extension CodexTokenUsageReader {
         precondition(totals == [800, 1030])
         precondition(first.periods.map { $0.name } == ["今日", "当前周额度"])
         precondition(first.periods[1].interval == cycle)
-        precondition(first.periods[0].models["gpt-a"]?.uncached == 120)
-        precondition(first.periods[0].models["gpt-a"]?.cached == 150)
-        precondition(first.periods[0].models["gpt-a"]?.cacheWrite == 30)
-        precondition(first.periods[0].models["gpt-a"]?.output == 50)
+        precondition(first.periods[0].models[unknownA]?.uncached == 120)
+        precondition(first.periods[0].models[unknownA]?.cached == 150)
+        precondition(first.periods[0].models[unknownA]?.cacheWrite == 30)
+        precondition(first.periods[0].models[unknownA]?.output == 50)
         precondition(first.skippedEvents == 0)
         try data.write(to: sessions.appendingPathComponent("fork-copy.jsonl"))
         try FileManager.default.moveItem(at: file, to: archived.appendingPathComponent("original.jsonl"))
@@ -419,7 +443,7 @@ extension CodexTokenUsageReader {
         let appended = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         let appendedTotal = try appended.periods[0].total.total
         precondition(appendedTotal == 860)
-        precondition(appended.periods[0].models["未记录模型"]?.total == 60)
+        precondition(appended.periods[0].models[unrecorded]?.total == 60)
         try Data().write(to: partial)
         let truncatedTotal = try reader.read(now: now, timeZone: zone, weeklyRange: cycle).periods[0].total.total
         precondition(truncatedTotal == 800)
@@ -494,8 +518,8 @@ extension CodexTokenUsageReader {
         let withPrices = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: todayRange)
         precondition(withPrices.periods[0].estimatedUSD == Decimal(35) / 100)
         precondition(withPrices.periods[2].estimatedUSD == Decimal(35) / 100)
-        precondition(withPrices.periods[0].costs["gpt-a"]?.total == 0)
-        let summed = withPrices.periods[0].costs["gpt-6.1-sol"]!
+        precondition(withPrices.periods[0].costs[unknownA]?.total == 0)
+        let summed = withPrices.periods[0].costs[standardSol]!
         precondition(summed.uncached == Decimal(24) / 100 && summed.cached == Decimal(15) / 1000)
         precondition(summed.cacheWrite == Decimal(75) / 1000 && summed.output == Decimal(2) / 100)
         precondition(summed.reasoning == Decimal(1) / 100 && summed.total == Decimal(35) / 100)
@@ -504,21 +528,33 @@ extension CodexTokenUsageReader {
         mixedData += try event("2026-11-01T05:00:00Z", input: 150_000, output: 1000, cumulative: 150_000)
         mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "priority"]])
         mixedData += try event("2026-11-01T05:01:00Z", input: 150_000, output: 1000, cumulative: 300_000)
+        mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "fast"]])
+        mixedData += try event("2026-11-01T05:01:30Z", input: 150_000, output: 1000, cumulative: 450_000)
         mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]])
-        mixedData += try event("2026-11-01T05:02:00Z", input: 150_000, output: 1000, cumulative: 450_000)
+        mixedData += try event("2026-11-01T05:02:00Z", input: 150_000, output: 1000, cumulative: 600_000)
         mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": [:]])
-        mixedData += try event("2026-11-01T05:03:00Z", input: 150_000, output: 1000, cumulative: 600_000)
+        mixedData += try event("2026-11-01T05:03:00Z", input: 150_000, output: 1000, cumulative: 750_000)
         try mixedData.write(to: mixedFile)
         let mixed = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: todayRange)
-        let mixedCost = mixed.periods[0].costs["gpt-6.1-sol"]!
-        precondition(mixed.periods[0].models["gpt-6.1-sol"]?.total == 906_000)
-        precondition(mixedCost.total == Decimal(875) / 1000)
-        precondition(mixedCost.serviceTiers == ["标准", "Fast", "未知"])
+        let solGroups = mixed.periods[0].models.filter { $0.key.model == "gpt-6.1-sol" }
+        precondition(solGroups.count == 3 && solGroups.values.reduce(0, { $0 + $1.total }) == 1_057_000)
+        precondition(solGroups[standardSol]?.total == 453_000 && solGroups[fastSol]?.total == 302_000)
+        precondition(solGroups[unknownSol]?.total == 302_000)
+        precondition(solGroups[fastSol]?.cached == 150_000 && solGroups[fastSol]?.cacheWrite == 30_000)
+        precondition(fastSol.title == "gpt-6.1-sol · Fast" && standardSol.title == "gpt-6.1-sol · 标准")
+        precondition(mixed.periods[0].costs[standardSol]?.total == Decimal(525) / 1000)
+        precondition(mixed.periods[0].costs[fastSol]?.total == Decimal(7) / 10)
+        precondition(mixed.periods[0].costs[unknownSol]?.total == 0)
+        precondition(mixed.periods[0].costs[fastSol]?.serviceTiers == ["Fast"])
+        precondition(mixed.periods[0].estimatedUSD == Decimal(1225) / 1000)
+        precondition(mixed.periods[1].models[fastSol] == mixed.periods[0].models[fastSol])
+        precondition(mixed.periods[2].models[fastSol] == mixed.periods[0].models[fastSol])
         precondition(mixed.periods[2].estimatedUSD == mixed.periods[0].estimatedUSD)
         let fork = archived.appendingPathComponent("mixed-copy.jsonl")
         try mixedData.write(to: fork)
         let deduplicated = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         precondition(deduplicated.periods[0].estimatedUSD == mixed.periods[0].estimatedUSD)
+        precondition(deduplicated.periods[0].models[fastSol] == mixed.periods[0].models[fastSol])
         try FileManager.default.removeItem(at: fork)
         try FileManager.default.removeItem(at: mixedFile)
         try FileManager.default.removeItem(at: sessions.appendingPathComponent("priced.jsonl"))
