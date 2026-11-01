@@ -253,6 +253,7 @@ final class CodexTokenUsageReader {
               let info = record.payload.info else { return }
         let previous = state.previous
         state.previous = info.total_token_usage
+        guard state.model != "codex-auto-review" else { return }
         if let total = info.total_token_usage, let previous,
            total.input == previous.input, total.output == previous.output { return }
         // 累计值可能继承自更早的聊天；只记本次请求，不能把首条累计值计入当天。
@@ -535,7 +536,22 @@ extension CodexTokenUsageReader {
         mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": [:]])
         mixedData += try event("2026-11-01T05:03:00Z", input: 150_000, output: 1000, cumulative: 750_000)
         try mixedData.write(to: mixedFile)
+        let freeFile = sessions.appendingPathComponent("auto-review.jsonl")
+        var freeData = try line("turn_context", ["model": "codex-auto-review"])
+        for (index, tier) in ["default", "fast", "priority"].enumerated() {
+            freeData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": tier]])
+            freeData += try event("2026-11-01T05:04:0\(index)Z", input: 1_000_000, output: 100_000,
+                                  cumulative: (index + 1) * 1_000_000)
+        }
+        try freeData.write(to: freeFile)
         let mixed = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: todayRange)
+        let mixedTotals = try mixed.periods.map { try $0.total.total }
+        precondition(mixedTotals == [1_057_800, 1_058_030, 1_057_800])
+        precondition(mixed.periods.allSatisfy { period in
+            !period.models.keys.contains { $0.model == "codex-auto-review" }
+                && !period.costs.keys.contains { $0.model == "codex-auto-review" }
+        })
+        precondition(mixed.periods[0].models[unknownA] != nil)
         let solGroups = mixed.periods[0].models.filter { $0.key.model == "gpt-6.1-sol" }
         precondition(solGroups.count == 3 && solGroups.values.reduce(0, { $0 + $1.total }) == 1_057_000)
         precondition(solGroups[standardSol]?.total == 453_000 && solGroups[fastSol]?.total == 302_000)
@@ -557,6 +573,7 @@ extension CodexTokenUsageReader {
         precondition(deduplicated.periods[0].models[fastSol] == mixed.periods[0].models[fastSol])
         try FileManager.default.removeItem(at: fork)
         try FileManager.default.removeItem(at: mixedFile)
+        try FileManager.default.removeItem(at: freeFile)
         try FileManager.default.removeItem(at: sessions.appendingPathComponent("priced.jsonl"))
         let boundaryFile = sessions.appendingPathComponent("cycle-boundaries.jsonl")
         var boundaryData = try line("turn_context", ["model": "gpt-6.1-sol"])
