@@ -118,6 +118,7 @@ enum CodexTokenPricing {
 
 struct CodexTokenUsagePeriod {
     let name: String
+    let interval: DateInterval
     var models: [String: CodexTokenAmounts] = [:]
     var costs: [String: CodexTokenCosts] = [:]
     var estimatedUSD: Decimal { costs.values.reduce(0) { $0 + $1.total } }
@@ -250,17 +251,15 @@ final class CodexTokenUsageReader {
     }
 
     func read(now: Date = Date(), timeZone: TimeZone = .current,
-              range: DateInterval? = nil) throws -> CodexTokenUsageSnapshot {
+              weeklyRange: DateInterval? = nil, range: DateInterval? = nil) throws -> CodexTokenUsageSnapshot {
         if let range, range.duration == 0 { throw CodexTokenUsageError.invalidRange }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        calendar.firstWeekday = 2
-        var starts = [calendar.startOfDay(for: now),
-                      calendar.dateInterval(of: .weekOfYear, for: now)!.start,
-                      calendar.dateInterval(of: .month, for: now)!.start]
-        var names = ["今日", "本周", "本月"]
+        var periods = [CodexTokenUsagePeriod(name: "今日", interval: calendar.dateInterval(of: .day, for: now)!)]
+        if let weeklyRange, weeklyRange.start <= now, now < weeklyRange.end {
+            periods.append(CodexTokenUsagePeriod(name: "当前周额度", interval: weeklyRange))
+        }
         if let range {
-            starts.append(range.start)
             let lastDay = range.end.addingTimeInterval(-1)
             let formatter = DateFormatter()
             formatter.calendar = calendar
@@ -268,9 +267,10 @@ final class CodexTokenUsageReader {
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = calendar.isDate(range.start, equalTo: now, toGranularity: .year)
                 && calendar.isDate(lastDay, equalTo: now, toGranularity: .year) ? "M/d" : "yy/M/d"
-            names.append(formatter.string(from: range.start) + "–" + formatter.string(from: lastDay))
+            periods.append(CodexTokenUsagePeriod(
+                name: formatter.string(from: range.start) + "–" + formatter.string(from: lastDay), interval: range))
         }
-        let since = starts.min()!
+        let since = periods.map { $0.interval.start }.min()!
         if let retainedSince {
             if since < retainedSince { files.removeAll() }
             else if since > retainedSince {
@@ -332,14 +332,13 @@ final class CodexTokenUsageReader {
         }
         guard foundDirectory else { throw CodexTokenUsageError.missingSessions }
         files = files.filter { liveFiles.contains($0.key) }
-        var periods = names.map { CodexTokenUsagePeriod(name: $0) }
         var seen = Set<Identity>()
         for state in files.values {
             for event in state.events where event.date >= since && event.date <= now {
                 // 分叉历史或重复副本保留事件时间和累计值，跨文件只统计一次。
                 guard seen.insert(event.identity).inserted else { continue }
-                for index in periods.indices where event.date >= starts[index] {
-                    if index == 3, let range, event.date >= range.end { continue }
+                for index in periods.indices where event.date >= periods[index].interval.start
+                    && event.date < periods[index].interval.end {
                     periods[index].models[event.model] = try (periods[index].models[event.model] ?? CodexTokenAmounts())
                         .adding(event.identity.amounts)
                     periods[index].costs[event.model] = (periods[index].costs[event.model] ?? CodexTokenCosts())
@@ -391,9 +390,13 @@ extension CodexTokenUsageReader {
         let now = ISO8601DateFormatter().date(from: "2026-11-01T08:00:00Z")!
         let zone = TimeZone(identifier: "Asia/Shanghai")!
         let reader = CodexTokenUsageReader(root: root)
-        let first = try reader.read(now: now, timeZone: zone)
+        let cycleStart = ISO8601DateFormatter().date(from: "2026-10-28T12:00:00Z")!
+        let cycle = DateInterval(start: cycleStart, duration: 7 * 24 * 60 * 60)
+        let first = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         let totals = try first.periods.map { try $0.total.total }
-        precondition(totals == [800, 1150, 800])
+        precondition(totals == [800, 1030])
+        precondition(first.periods.map { $0.name } == ["今日", "当前周额度"])
+        precondition(first.periods[1].interval == cycle)
         precondition(first.periods[0].models["gpt-a"]?.uncached == 120)
         precondition(first.periods[0].models["gpt-a"]?.cached == 150)
         precondition(first.periods[0].models["gpt-a"]?.cacheWrite == 30)
@@ -401,49 +404,49 @@ extension CodexTokenUsageReader {
         precondition(first.skippedEvents == 0)
         try data.write(to: sessions.appendingPathComponent("fork-copy.jsonl"))
         try FileManager.default.moveItem(at: file, to: archived.appendingPathComponent("original.jsonl"))
-        let copied = try reader.read(now: now, timeZone: zone)
+        let copied = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         let copiedTotal = try copied.periods[0].total.total
         precondition(copiedTotal == 800)
         let partial = sessions.appendingPathComponent("partial.jsonl")
         let extra = try event("2026-11-01T02:00:00Z", input: 50, output: 10, cumulative: 50)
         try extra.dropLast(2).write(to: partial)
-        let partialTotal = try reader.read(now: now, timeZone: zone).periods[0].total.total
+        let partialTotal = try reader.read(now: now, timeZone: zone, weeklyRange: cycle).periods[0].total.total
         precondition(partialTotal == 800)
         let handle = try FileHandle(forWritingTo: partial)
         try handle.seekToEnd()
         try handle.write(contentsOf: extra.suffix(2))
         try handle.close()
-        let appended = try reader.read(now: now, timeZone: zone)
+        let appended = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         let appendedTotal = try appended.periods[0].total.total
         precondition(appendedTotal == 860)
         precondition(appended.periods[0].models["未记录模型"]?.total == 60)
         try Data().write(to: partial)
-        let truncatedTotal = try reader.read(now: now, timeZone: zone).periods[0].total.total
+        let truncatedTotal = try reader.read(now: now, timeZone: zone, weeklyRange: cycle).periods[0].total.total
         precondition(truncatedTotal == 800)
         let iso = ISO8601DateFormatter()
         let oldDay = iso.date(from: "2026-10-25T08:00:00Z")!
         let oldRange = try dateRange(from: oldDay, through: oldDay, timeZone: zone)
-        let historical = try reader.read(now: now, timeZone: zone, range: oldRange)
-        let historicalTotal = try historical.periods[3].total.total
-        let unchanged = try historical.periods.prefix(3).map { try $0.total.total }
-        precondition(historicalTotal == 990 && unchanged == [800, 1150, 800])
+        let historical = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: oldRange)
+        let historicalTotal = try historical.periods[2].total.total
+        let unchanged = try historical.periods.prefix(2).map { try $0.total.total }
+        precondition(historicalTotal == 990 && unchanged == [800, 1030])
         let october31 = iso.date(from: "2026-10-31T08:00:00Z")!
         let monthEndRange = try dateRange(from: october31, through: october31, timeZone: zone)
-        let monthEnd = try reader.read(now: now, timeZone: zone, range: monthEndRange)
-        let monthEndTotal = try monthEnd.periods[3].total.total
-        precondition(monthEndTotal == 230 && monthEnd.periods[3].name == "10/31–10/31")
+        let monthEnd = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: monthEndRange)
+        let monthEndTotal = try monthEnd.periods[2].total.total
+        precondition(monthEndTotal == 230 && monthEnd.periods[2].name == "10/31–10/31")
         let twoDays = try dateRange(from: october31, through: now, timeZone: zone)
-        let spanning = try reader.read(now: now, timeZone: zone, range: twoDays)
-        let spanningTotal = try spanning.periods[3].total.total
-        precondition(spanningTotal == 1030 && spanning.periods[3].name == "10/31–11/1")
+        let spanning = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: twoDays)
+        let spanningTotal = try spanning.periods[2].total.total
+        precondition(spanningTotal == 1030 && spanning.periods[2].name == "10/31–11/1")
         do {
             _ = try dateRange(from: now, through: oldDay, timeZone: zone)
             preconditionFailure("Reversed dates must be rejected")
         } catch CodexTokenUsageError.invalidRange {}
         let emptyDay = iso.date(from: "2026-09-01T08:00:00Z")!
         let emptyRange = try dateRange(from: emptyDay, through: emptyDay, timeZone: zone)
-        let emptyHistory = try reader.read(now: now, timeZone: zone, range: emptyRange)
-        precondition(emptyHistory.periods[3].models.isEmpty && emptyHistory.periods[3].estimatedUSD == 0)
+        let emptyHistory = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: emptyRange)
+        precondition(emptyHistory.periods[2].models.isEmpty && emptyHistory.periods[2].estimatedUSD == 0)
         let missing = try JSONDecoder().decode(CodexTokenAmounts.self,
             from: Data(#"{"input_tokens":100,"output_tokens":10}"#.utf8))
         precondition(missing.cached == nil && missing.uncached == nil && missing.rows.contains("缓存命中：未记录"))
@@ -488,9 +491,9 @@ extension CodexTokenUsageReader {
         priceData += try event("2026-11-01T04:00:00Z", input: 150_000, output: 1000, cumulative: 300_000)
         try priceData.write(to: sessions.appendingPathComponent("priced.jsonl"))
         let todayRange = try dateRange(from: now, through: now, timeZone: zone)
-        let withPrices = try reader.read(now: now, timeZone: zone, range: todayRange)
+        let withPrices = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: todayRange)
         precondition(withPrices.periods[0].estimatedUSD == Decimal(35) / 100)
-        precondition(withPrices.periods[3].estimatedUSD == Decimal(35) / 100)
+        precondition(withPrices.periods[2].estimatedUSD == Decimal(35) / 100)
         precondition(withPrices.periods[0].costs["gpt-a"]?.total == 0)
         let summed = withPrices.periods[0].costs["gpt-6.1-sol"]!
         precondition(summed.uncached == Decimal(24) / 100 && summed.cached == Decimal(15) / 1000)
@@ -506,26 +509,51 @@ extension CodexTokenUsageReader {
         mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": [:]])
         mixedData += try event("2026-11-01T05:03:00Z", input: 150_000, output: 1000, cumulative: 600_000)
         try mixedData.write(to: mixedFile)
-        let mixed = try reader.read(now: now, timeZone: zone, range: todayRange)
+        let mixed = try reader.read(now: now, timeZone: zone, weeklyRange: cycle, range: todayRange)
         let mixedCost = mixed.periods[0].costs["gpt-6.1-sol"]!
         precondition(mixed.periods[0].models["gpt-6.1-sol"]?.total == 906_000)
         precondition(mixedCost.total == Decimal(875) / 1000)
         precondition(mixedCost.serviceTiers == ["标准", "Fast", "未知"])
-        precondition(mixed.periods[3].estimatedUSD == mixed.periods[0].estimatedUSD)
+        precondition(mixed.periods[2].estimatedUSD == mixed.periods[0].estimatedUSD)
         let fork = archived.appendingPathComponent("mixed-copy.jsonl")
         try mixedData.write(to: fork)
-        let deduplicated = try reader.read(now: now, timeZone: zone)
+        let deduplicated = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         precondition(deduplicated.periods[0].estimatedUSD == mixed.periods[0].estimatedUSD)
         try FileManager.default.removeItem(at: fork)
         try FileManager.default.removeItem(at: mixedFile)
         try FileManager.default.removeItem(at: sessions.appendingPathComponent("priced.jsonl"))
+        let boundaryFile = sessions.appendingPathComponent("cycle-boundaries.jsonl")
+        var boundaryData = try line("turn_context", ["model": "gpt-6.1-sol"])
+        boundaryData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]])
+        boundaryData += try event("2026-10-28T11:59:59.999Z", input: 100, output: 10, cumulative: 100)
+        boundaryData += try event("2026-10-28T12:00:00Z", input: 200, output: 20, cumulative: 300)
+        boundaryData += try event("2026-11-04T11:59:59.999Z", input: 300, output: 30, cumulative: 600)
+        boundaryData += try event("2026-11-04T12:00:00Z", input: 400, output: 40, cumulative: 1000)
+        boundaryData += try event("2026-11-04T12:00:01Z", input: 500, output: 50, cumulative: 1500)
+        try boundaryData.write(to: boundaryFile)
+        let currentCycle = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
+        let cycleTokens = try currentCycle.periods[1].total.total
+        precondition(cycleTokens == 1250 && currentCycle.periods[1].estimatedUSD == Decimal(42) / 100_000)
+        let beforeReset = try reader.read(now: cycle.end.addingTimeInterval(-0.0001), timeZone: zone, weeklyRange: cycle)
+        let beforeResetTokens = try beforeReset.periods[1].total.total
+        precondition(beforeResetTokens == 1580, "Old cycle must include requests before reset, excluding the reset instant")
+        let nextCycle = DateInterval(start: cycle.end, duration: cycle.duration)
+        let afterReset = try reader.read(now: cycle.end, timeZone: zone, weeklyRange: nextCycle)
+        let afterResetTokens = try afterReset.periods[1].total.total
+        precondition(afterResetTokens == 440, "The request at reset belongs to the next cycle; future requests are excluded")
+        let expired = try reader.read(now: cycle.end, timeZone: zone, weeklyRange: cycle)
+        precondition(expired.periods.count == 1)
+        try FileManager.default.removeItem(at: boundaryFile)
+        let noCycle = try reader.read(now: now, timeZone: zone, range: todayRange)
+        let noCycleTokens = try noCycle.periods[1].total.total
+        precondition(noCycle.periods.count == 2 && noCycleTokens == 800)
         let unknownSum = try missing.adding(CodexTokenAmounts(input: 10, cached: 5))
         precondition(unknownSum.cached == nil && unknownSum.total == 120)
         let absent = try line("event_msg", ["type": "token_count", "info": [
             "total_token_usage": ["input_tokens": 1_000_000, "output_tokens": 1_000]
         ]])
         try absent.write(to: sessions.appendingPathComponent("missing-last.jsonl"))
-        let incomplete = try reader.read(now: now, timeZone: zone)
+        let incomplete = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
         let incompleteTotal = try incomplete.periods[0].total.total
         precondition(incomplete.skippedEvents == 1 && incompleteTotal == 800)
         precondition(!CodexTokenAmounts(input: 10, cached: 11).valid)

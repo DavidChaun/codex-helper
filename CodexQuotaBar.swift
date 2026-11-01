@@ -53,6 +53,14 @@ struct Quota: Decodable {
         let separator = buckets.first?.1.windows.count == 1 ? ": " : " · "
         return title.replacingOccurrences(of: separator, with: "\n")
     }
+    func weeklyRange(now: Date = Date()) -> DateInterval? {
+        guard let window = buckets.first?.1.windows.first(where: { $0.windowDurationMins == 10080 }),
+              let reset = window.resetsAt, reset.isFinite else { return nil }
+        let end = Date(timeIntervalSince1970: reset)
+        let start = end.addingTimeInterval(-7 * 24 * 60 * 60)
+        guard start <= now, now < end else { return nil }
+        return DateInterval(start: start, end: end)
+    }
 }
 
 enum QueryError: String, Error {
@@ -554,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     self.quota = value
                     self.updated = Date()
                     self.error = nil
+                    self.refreshTokenUsage()
                 case .failure(let failure):
                     self.error = (failure as? QueryError)?.rawValue ?? QueryError.response.rawValue
                 }
@@ -566,11 +575,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         guard !tokenUsageBusy else { return }
         tokenUsageBusy = true
         let requestedRange = tokenUsageRange
+        let requestedWeek = quota?.weeklyRange()
         tokenUsageQueue.async {
-            let result = Result { try self.tokenUsageReader.read(range: requestedRange) }
+            let result = Result { try self.tokenUsageReader.read(weeklyRange: requestedWeek, range: requestedRange) }
             DispatchQueue.main.async {
                 self.tokenUsageBusy = false
-                guard self.tokenUsageRange == requestedRange else {
+                guard self.tokenUsageRange == requestedRange, self.quota?.weeklyRange() == requestedWeek else {
                     self.refreshTokenUsage()
                     return
                 }
@@ -660,7 +670,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
         info("费用估算（USD）").toolTip = "官方 API 参考价，Fast / priority 为标准价 ×2，默认 30 分钟缓存；未确认模型单价或档位按 $0，非订阅实际账单。"
         if let tokenUsage {
-            for (index, period) in tokenUsage.periods.enumerated() {
+            for period in tokenUsage.periods {
+                if period.name == "当前周额度", period.interval != quota?.weeklyRange() { continue }
                 let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
                 let periodMenu = NSMenu()
                 periodMenu.autoenablesItems = false
@@ -687,13 +698,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     periodMenu.addItem(empty)
                 }
                 item.submenu = periodMenu
-                item.toolTip = "\(tokenUsage.timeZone) · 本周从周一开始 · 按日志模型标签分类"
-                if index == 3, let range = tokenUsageRange {
+                item.toolTip = "\(period.interval.start.formatted(date: .numeric, time: .shortened)) 至 \(period.interval.end.formatted(date: .numeric, time: .shortened)) · \(tokenUsage.timeZone) · 按日志模型标签分类"
+                if let range = tokenUsageRange, period.interval == range {
                     let end = range.end.addingTimeInterval(-1)
                     item.toolTip = "\(range.start.formatted(date: .numeric, time: .omitted)) 至 \(end.formatted(date: .numeric, time: .omitted))（含首尾当天）· \(tokenUsage.timeZone)"
                 }
                 menu.addItem(item)
             }
+            if quota?.weeklyRange() == nil { info("当前周额度 · 周期暂不可用") }
             info("更新于 \(tokenUsage.updated.formatted(date: .omitted, time: .standard))")
             if tokenUsage.unreadableFiles > 0 { info("⚠ \(tokenUsage.unreadableFiles) 个文件未能读取，统计可能不完整") }
             if tokenUsage.skippedEvents > 0 { info("⚠ \(tokenUsage.skippedEvents) 条用量缺失或异常，已跳过") }
@@ -1196,7 +1208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let now = Date()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        let start = tokenUsageRange?.start ?? calendar.dateInterval(of: .month, for: now)!.start
+        let start = tokenUsageRange?.start ?? quota?.weeklyRange(now: now)?.start ?? calendar.startOfDay(for: now)
         let end = tokenUsageRange?.end.addingTimeInterval(-1) ?? now
         for (index, name) in ["开始日期", "结束日期"].enumerated() {
             let y = CGFloat(108 - index * 38)
@@ -1505,17 +1517,27 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(parsed.title == "5h: 100% · 1w: 94%")
     precondition(parsed.statusBarTitle == "5h: 100%\n1w: 94%")
     precondition(parsed.buckets[0].1.windows[1].label == "7天")
+    let reset = Date(timeIntervalSince1970: 1789368213)
+    let currentWeek = parsed.weeklyRange(now: reset.addingTimeInterval(-1))!
+    precondition(currentWeek.end == reset && currentWeek.duration == 7 * 24 * 60 * 60)
+    precondition(parsed.weeklyRange(now: currentWeek.start) == currentWeek)
+    precondition(parsed.weeklyRange(now: currentWeek.start.addingTimeInterval(-0.001)) == nil)
+    precondition(parsed.weeklyRange(now: reset) == nil)
     precondition(Window(usedPercent: 110, windowDurationMins: nil, resetsAt: nil).remaining == 0)
     precondition(Window(usedPercent: -10, windowDurationMins: 60, resetsAt: nil).remaining == 100)
     precondition(Window(usedPercent: 99.1, windowDurationMins: 60, resetsAt: nil).remaining == 0)
     let legacy = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300}}}"#.utf8))
     precondition(legacy.title == "5h: 75%")
     precondition(legacy.statusBarTitle == "5h\n75%")
+    precondition(legacy.weeklyRange() == nil)
     let weekly = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":{"primary":null,"secondary":{"usedPercent":0,"windowDurationMins":10080}}}"#.utf8))
     precondition(weekly.title == "1w: 100%")
     precondition(weekly.statusBarTitle == "1w\n100%")
+    precondition(weekly.weeklyRange() == nil)
     let weeklyPrimary = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":6,"windowDurationMins":10080}}}}"#.utf8))
     precondition(weeklyPrimary.statusBarTitle == "1w\n94%")
+    let primaryWithReset = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213}}}}"#.utf8))
+    precondition(primaryWithReset.weeklyRange(now: reset.addingTimeInterval(-1)) == currentWeek)
     let empty = try JSONDecoder().decode(Quota.self, from: Data(#"{"rateLimits":null,"rateLimitsByLimitId":{}}"#.utf8))
     precondition(empty.title == "额度暂无")
     precondition(empty.statusBarTitle == "额度暂无")
@@ -1567,10 +1589,12 @@ if CommandLine.arguments.contains("--self-test") {
     TraeAccountPool.selfTest()
     print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
 } else if CommandLine.arguments.contains("--check-token-usage") {
-    let snapshot = try CodexTokenUsageReader().read()
-    print("本机 Token 用量 · \(snapshot.timeZone) · 本周从周一开始")
+    let weeklyRange = (try? readQuota())?.weeklyRange()
+    let snapshot = try CodexTokenUsageReader().read(weeklyRange: weeklyRange)
+    print("本机 Token 用量 · \(snapshot.timeZone)")
+    if weeklyRange == nil { print("当前周额度：周期暂不可用") }
     for period in snapshot.periods {
-        print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens")
+        print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens；\(period.interval.start) 至 \(period.interval.end)")
         for (model, amounts) in period.models.sorted(by: { $0.key < $1.key }) {
             let costs = period.costs[model] ?? CodexTokenCosts()
             print("  \(model)：\(CodexTokenPricing.dollars(costs.total))；" + costs.rows(amounts: amounts).joined(separator: "；"))
