@@ -51,19 +51,21 @@ struct CodexTokenCosts {
     var cacheWrite: Decimal = 0
     var output: Decimal = 0
     var reasoning: Decimal = 0
+    var serviceTiers: Set<String> = []
     var input: Decimal { uncached + cached + cacheWrite }
     var total: Decimal { input + output }
 
     func adding(_ other: Self) -> Self {
         Self(uncached: uncached + other.uncached, cached: cached + other.cached,
              cacheWrite: cacheWrite + other.cacheWrite, output: output + other.output,
-             reasoning: reasoning + other.reasoning)
+             reasoning: reasoning + other.reasoning, serviceTiers: serviceTiers.union(other.serviceTiers))
     }
 
     func rows(amounts: CodexTokenAmounts) -> [String] {
         let prices = [input, uncached, cached, cacheWrite, output, reasoning]
         return ["总计：\(amounts.total.formatted(.number)) · \(CodexTokenPricing.dollars(total))"]
             + zip(amounts.rows, prices).map { "\($0.0) · \(CodexTokenPricing.dollars($0.1))" }
+            + ["档位：\(serviceTiers.isEmpty ? "未知" : serviceTiers.sorted().joined(separator: " / "))"]
     }
 }
 
@@ -80,23 +82,31 @@ enum CodexTokenPricing {
         "gpt-5.6-luna": (Decimal(2) / 10, Decimal(2) / 100, Decimal(12) / 10)
     ]
 
-    static func estimate(model: String, amounts: CodexTokenAmounts) -> Decimal {
-        breakdown(model: model, amounts: amounts).total
+    static func estimate(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default") -> Decimal {
+        breakdown(model: model, amounts: amounts, serviceTier: serviceTier).total
     }
 
-    static func breakdown(model: String, amounts: CodexTokenAmounts) -> CodexTokenCosts {
+    static func breakdown(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default") -> CodexTokenCosts {
+        let multiplier: Decimal
+        let label: String
+        switch serviceTier {
+        case "default", "standard": multiplier = 1; label = "标准"
+        case "fast", "priority": multiplier = 2; label = "Fast"
+        default: return CodexTokenCosts(serviceTiers: ["未知"])
+        }
         guard let rate = rates[model], amounts.valid,
               let uncached = amounts.uncached, let cached = amounts.cached,
-              let write = amounts.cacheWrite else { return CodexTokenCosts() }
-        // shortcut: 按 Standard、默认 30 分钟缓存计价；需要实际账单时再接入速度和缓存寿命。
-        let inputMultiplier: Decimal = amounts.input > 272_000 ? 2 : 1
-        let outputMultiplier: Decimal = amounts.input > 272_000 ? Decimal(3) / 2 : 1
+              let write = amounts.cacheWrite else { return CodexTokenCosts(serviceTiers: [label]) }
+        // shortcut: 用日志中的请求档位和默认 30 分钟缓存估价；实际回退和其他缓存寿命需响应元数据。
+        let inputMultiplier: Decimal = (amounts.input > 272_000 ? 2 : 1) * multiplier
+        let outputMultiplier: Decimal = (amounts.input > 272_000 ? Decimal(3) / 2 : 1) * multiplier
         return CodexTokenCosts(
             uncached: Decimal(uncached) * rate.input * inputMultiplier / 1_000_000,
             cached: Decimal(cached) * rate.cached * inputMultiplier / 1_000_000,
             cacheWrite: Decimal(write) * rate.input * 5 / 4 * inputMultiplier / 1_000_000,
             output: Decimal(amounts.output) * rate.output * outputMultiplier / 1_000_000,
-            reasoning: Decimal(amounts.reasoning ?? 0) * rate.output * outputMultiplier / 1_000_000)
+            reasoning: Decimal(amounts.reasoning ?? 0) * rate.output * outputMultiplier / 1_000_000,
+            serviceTiers: [label])
     }
 
     static func dollars(_ amount: Decimal) -> String {
@@ -152,6 +162,10 @@ final class CodexTokenUsageReader {
             let type: String?
             let model: String?
             let info: Info?
+            let thread_settings: ThreadSettings?
+        }
+        struct ThreadSettings: Decodable {
+            let service_tier: String?
         }
         struct Info: Decodable {
             let total_token_usage: CodexTokenAmounts?
@@ -174,6 +188,7 @@ final class CodexTokenUsageReader {
         var modified: Date?
         var pending = Data()
         var model = "未记录模型"
+        var serviceTier: String?
         var previous: CodexTokenAmounts?
         var events: [Event] = []
         var skipped = 0
@@ -191,6 +206,7 @@ final class CodexTokenUsageReader {
     }()
     private let usageMarker = Data("\"token_count\"".utf8)
     private let contextMarker = Data("\"turn_context\"".utf8)
+    private let settingsMarker = Data("\"thread_settings_applied\"".utf8)
 
     init(root: URL = ProcessInfo.processInfo.environment["CODEX_HOME"].map {
         URL(fileURLWithPath: $0, isDirectory: true)
@@ -199,13 +215,18 @@ final class CodexTokenUsageReader {
     }
 
     private func consume(_ line: Data, state: inout FileState, since: Date) {
-        guard line.range(of: usageMarker) != nil || line.range(of: contextMarker) != nil else { return }
+        guard line.range(of: usageMarker) != nil || line.range(of: contextMarker) != nil
+                || line.range(of: settingsMarker) != nil else { return }
         guard let record = try? decoder.decode(Record.self, from: line) else {
             state.skipped += 1
             return
         }
         if record.type == "turn_context" {
             if let model = record.payload.model, !model.isEmpty { state.model = model }
+            return
+        }
+        if record.type == "event_msg", record.payload.type == "thread_settings_applied" {
+            state.serviceTier = record.payload.thread_settings?.service_tier
             return
         }
         guard record.type == "event_msg", record.payload.type == "token_count",
@@ -224,7 +245,8 @@ final class CodexTokenUsageReader {
         state.events.append(Event(identity: Identity(timestamp: record.timestamp,
                                                      cumulative: info.total_token_usage, amounts: amounts),
                                   date: date, model: state.model,
-                                  costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts)))
+                                  costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts,
+                                                                    serviceTier: state.serviceTier)))
     }
 
     func read(now: Date = Date(), timeZone: TimeZone = .current,
@@ -447,9 +469,21 @@ extension CodexTokenUsageReader {
         precondition(CodexTokenPricing.estimate(model: "codex-auto-review", amounts: priced) == 0)
         precondition(CodexTokenPricing.estimate(model: "workbuddy/glm-5.3", amounts: priced) == 0)
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: missing) == 0)
+        let fast = CodexTokenPricing.breakdown(model: "gpt-6.1-sol", amounts: priced, serviceTier: "fast")
+        precondition(fast.total == Decimal(64) / 100 && fast.input == parts.input * 2)
+        precondition(fast.cached == parts.cached * 2 && fast.cacheWrite == parts.cacheWrite * 2)
+        precondition(fast.output == parts.output * 2 && fast.reasoning == parts.reasoning * 2)
+        precondition(fast.rows(amounts: priced).last == "档位：Fast")
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: priced, serviceTier: "priority") == fast.total)
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: priced, serviceTier: nil) == 0)
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: priced, serviceTier: "auto") == 0)
+        precondition(CodexTokenPricing.estimate(model: "codex-auto-review", amounts: priced, serviceTier: "fast") == 0)
+        long.input = 300_000
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long, serviceTier: "fast") == Decimal(198) / 100)
         precondition(CodexTokenPricing.dollars(0) == "$0.00")
         precondition(CodexTokenPricing.dollars(Decimal(1005) / 1000) == "$1.01")
         var priceData = try line("turn_context", ["model": "gpt-6.1-sol"])
+        priceData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]])
         priceData += try event("2026-11-01T03:00:00Z", input: 150_000, output: 1000, cumulative: 150_000)
         priceData += try event("2026-11-01T04:00:00Z", input: 150_000, output: 1000, cumulative: 300_000)
         try priceData.write(to: sessions.appendingPathComponent("priced.jsonl"))
@@ -462,6 +496,28 @@ extension CodexTokenUsageReader {
         precondition(summed.uncached == Decimal(24) / 100 && summed.cached == Decimal(15) / 1000)
         precondition(summed.cacheWrite == Decimal(75) / 1000 && summed.output == Decimal(2) / 100)
         precondition(summed.reasoning == Decimal(1) / 100 && summed.total == Decimal(35) / 100)
+        let mixedFile = sessions.appendingPathComponent("mixed-speeds.jsonl")
+        var mixedData = try line("turn_context", ["model": "gpt-6.1-sol"])
+        mixedData += try event("2026-11-01T05:00:00Z", input: 150_000, output: 1000, cumulative: 150_000)
+        mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "priority"]])
+        mixedData += try event("2026-11-01T05:01:00Z", input: 150_000, output: 1000, cumulative: 300_000)
+        mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]])
+        mixedData += try event("2026-11-01T05:02:00Z", input: 150_000, output: 1000, cumulative: 450_000)
+        mixedData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": [:]])
+        mixedData += try event("2026-11-01T05:03:00Z", input: 150_000, output: 1000, cumulative: 600_000)
+        try mixedData.write(to: mixedFile)
+        let mixed = try reader.read(now: now, timeZone: zone, range: todayRange)
+        let mixedCost = mixed.periods[0].costs["gpt-6.1-sol"]!
+        precondition(mixed.periods[0].models["gpt-6.1-sol"]?.total == 906_000)
+        precondition(mixedCost.total == Decimal(875) / 1000)
+        precondition(mixedCost.serviceTiers == ["标准", "Fast", "未知"])
+        precondition(mixed.periods[3].estimatedUSD == mixed.periods[0].estimatedUSD)
+        let fork = archived.appendingPathComponent("mixed-copy.jsonl")
+        try mixedData.write(to: fork)
+        let deduplicated = try reader.read(now: now, timeZone: zone)
+        precondition(deduplicated.periods[0].estimatedUSD == mixed.periods[0].estimatedUSD)
+        try FileManager.default.removeItem(at: fork)
+        try FileManager.default.removeItem(at: mixedFile)
         try FileManager.default.removeItem(at: sessions.appendingPathComponent("priced.jsonl"))
         let unknownSum = try missing.adding(CodexTokenAmounts(input: 10, cached: 5))
         precondition(unknownSum.cached == nil && unknownSum.total == 120)

@@ -658,7 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let error = error { info("⚠ " + error) }
         if stale, quota != nil { info("显示上次结果，请刷新后确认") }
         if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
-        info("费用估算（USD）").toolTip = "官方 API Standard / 默认 30 分钟缓存参考价，非订阅实际账单；未确认单价按 $0。"
+        info("费用估算（USD）").toolTip = "官方 API 参考价，Fast / priority 为标准价 ×2，默认 30 分钟缓存；未确认模型单价或档位按 $0，非订阅实际账单。"
         if let tokenUsage {
             for (index, period) in tokenUsage.periods.enumerated() {
                 let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
