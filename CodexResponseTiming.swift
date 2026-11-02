@@ -89,10 +89,12 @@ extension CodexResponseTimingReader {
             if toolWait { try line("response_item", ["type": "function_call_output", "output": "DO_NOT_EXPORT"], reported) }
             let usage = CodexTokenAmounts(input: 100, cached: 0, cacheWrite: 0, output: Int64(output), reasoning: 10)
             let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(usage)) as! [String: Any]
-            try line("token_usage_record", ["thread_id": thread, "turn_id": turn, "usage": obj], reported)
+            cumulative += output
+            try line("token_usage_record", ["thread_id": thread, "turn_id": turn, "usage": obj,
+                "thread_token_usage": ["input_tokens": cumulative + (mismatch ? 0 : 10_000),
+                                       "output_tokens": cumulative + (mismatch ? 0 : 1000)]], reported)
             var last = obj
             if mismatch { last["output_tokens"] = output + 1 }
-            cumulative += output
             try line("event_msg", ["type": "token_count", "info": ["last_token_usage": last,
                 "total_token_usage": ["input_tokens": cumulative, "output_tokens": cumulative]]], reported)
         }
@@ -123,8 +125,8 @@ extension CodexResponseTimingReader {
         }
         let snapshot = try reader.read(now: now, timeZone: zone)
         let stats = snapshot.periods[0].performance[standard]!
-        precondition(stats.samples == 2 && stats.requests == 4 && stats.output == 1000 && stats.seconds == 10)
-        precondition(stats.average == 100, "Use weighted throughput and exclude the ten-minute tool wait")
+        precondition(stats.samples == 3 && stats.requests == 4 && stats.output == 1200 && stats.seconds == 11)
+        precondition(stats.average == 1200 / 11, "Use native usage when the legacy counter disagrees, excluding tool wait")
         precondition(snapshot.periods[0].performance[fast]?.average == 200)
         var legacy = Data()
         for bytes in data.split(separator: 10) {
@@ -135,8 +137,8 @@ extension CodexResponseTimingReader {
         }
         try legacy.write(to: sessions.appendingPathComponent("copied.jsonl"))
         let copied = try reader.read(now: now, timeZone: zone)
-        precondition(copied.periods[0].performance[standard]?.samples == 2)
-        precondition(copied.periods[0].performance[standard]?.average == 100)
+        precondition(copied.periods[0].performance[standard]?.samples == 3)
+        precondition(copied.periods[0].performance[standard]?.average == 1200 / 11)
         var zero = CodexOutputPerformance()
         zero.include(CodexUsageRecord(timestamp: "2026-11-01T01:00:00Z", occurredAt: now.timeIntervalSince1970,
             model: standard.model, serviceTier: "default", cumulative: nil, amounts: CodexTokenAmounts(input: 100), responseSeconds: 1))

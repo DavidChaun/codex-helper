@@ -55,12 +55,18 @@ struct UICheck {
         let custom = try CodexTokenUsageReader.dateRange(from: now.addingTimeInterval(-86400), through: now)
         let group = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .fast)
         let amounts = CodexTokenAmounts(input: 100, output: 10)
-        let periods = [("今日", DateInterval(start: now.addingTimeInterval(-3600), duration: 7200)),
+        var periods = [("今日", DateInterval(start: now.addingTimeInterval(-3600), duration: 7200)),
                        ("当前周额度", week), ("自选区间", custom)].map { name, range in
             var period = CodexTokenUsagePeriod(name: name, interval: range)
             period.models[group] = amounts
+            period.costs[group] = CodexTokenCosts(output: 1)
+            period.models[CodexTokenUsageGroup(model: "unsupported-price", tier: .unknown)] = amounts
+            let tiny = CodexTokenUsageGroup(model: "tiny-cost", tier: .standard)
+            period.models[tiny] = amounts
+            period.costs[tiny] = CodexTokenCosts(output: Decimal(1) / 1000)
             return period
         }
+        periods.append(CodexTokenUsagePeriod(name: "零金额区间", interval: custom))
         let snapshot = CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: "Asia/Shanghai",
             unreadableFiles: 0, skippedEvents: 0,
             devices: [CodexUsageDevice(id: UUID().uuidString, name: "Test Mac", updated: now)], syncMessage: "iCloud · 已读取 2 台设备的数据")
@@ -84,8 +90,10 @@ struct UICheck {
             item.submenu?.items.forEach(noMenuTooltips)
         }
         menu.items[usageStart...usageEnd].forEach(noMenuTooltips)
+        precondition(!menu.items.contains { $0.title.hasPrefix("零金额区间") })
         for name in ["今日", "当前周额度", "自选区间"] {
             let item = menu.items.first { $0.title.hasPrefix(name) }!
+            precondition(!item.submenu!.items.contains { $0.title.contains("unsupported-price") || $0.title.contains("tiny-cost") || $0.title.contains("$0.00") })
             let notes = item.submenu!.items.compactMap { ($0.view?.subviews.first as? NSTextField)?.stringValue }
             precondition(notes.contains { $0.contains("Asia/Shanghai") && $0.contains(" 至 ") }, "Keep the date range visible without hovering")
         }

@@ -774,6 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             }
             for period in tokenUsage.periods {
                 if period.name == "当前周额度", period.interval != quota?.weeklyRange() { continue }
+                guard CodexTokenPricing.dollars(period.estimatedUSD) != "$0.00" else { continue }
                 let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
                 let amount = CodexTokenPricing.dollars(period.estimatedUSD)
                 let title = NSMutableAttributedString(string: "\(period.name)   \(amount)")
@@ -788,6 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 }) {
                     let costs = period.costs[group] ?? CodexTokenCosts()
                     let price = CodexTokenPricing.dollars(costs.total)
+                    guard price != "$0.00" else { continue }
                     let performance = period.performance[group] ?? CodexOutputPerformance()
                     let modelItem = NSMenuItem(title: "\(group.title) · \(price) · \(performance.label)", action: nil, keyEquivalent: "")
                     let details = NSMenu()
@@ -800,8 +802,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     modelItem.submenu = details
                     periodMenu.addItem(modelItem)
                 }
-                if period.models.isEmpty {
-                    let empty = NSMenuItem(title: "暂无已记录用量", action: nil, keyEquivalent: "")
+                if periodMenu.items.isEmpty {
+                    let empty = NSMenuItem(title: "暂无可展示的计价模型", action: nil, keyEquivalent: "")
                     empty.isEnabled = false
                     periodMenu.addItem(empty)
                 }
@@ -815,10 +817,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 info(intervalText, in: periodMenu)
                 menu.addItem(item)
             }
+            if tokenUsage.periods.allSatisfy({ CodexTokenPricing.dollars($0.estimatedUSD) == "$0.00" }) { info("暂无可展示的计价用量") }
             if quota?.weeklyRange() == nil { info("当前周额度 · 周期暂不可用") }
             info("更新于 \(tokenUsage.updated.formatted(date: .omitted, time: .standard))")
             if tokenUsage.unreadableFiles > 0 { info("⚠ \(tokenUsage.unreadableFiles) 个文件未能读取，统计可能不完整") }
             if tokenUsage.skippedEvents > 0 { info("⚠ \(tokenUsage.skippedEvents) 条用量缺失或异常，已跳过") }
+            for warning in tokenUsage.usageWarnings { info("⚠ " + warning) }
         } else if tokenUsageError == nil {
             info(tokenUsageBusy ? "正在计算本地用量…" : "暂无本地用量数据")
         }
@@ -1690,6 +1694,7 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
     try CodexResponseTimingReader.selfTest()
+    try CodexBackgroundUsageReader.selfTest()
     try CodexUsageSync.selfTest()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))

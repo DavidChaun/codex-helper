@@ -10,6 +10,9 @@ struct CodexUsageRecord: Codable, Equatable {
     let cumulative: CodexTokenAmounts?
     let amounts: CodexTokenAmounts
     var responseSeconds: Double?
+    var requestKey: String?
+    var aliases: [String]?
+    let source: String?
 
     private struct Identity: Encodable {
         let timestamp: String
@@ -17,7 +20,8 @@ struct CodexUsageRecord: Codable, Equatable {
         let amounts: CodexTokenAmounts
     }
     init(timestamp: String, occurredAt: Double, model: String, serviceTier: String?,
-         cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts, id: String? = nil, responseSeconds: Double? = nil) {
+         cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts, id: String? = nil, responseSeconds: Double? = nil,
+         requestKey: String? = nil, aliases: [String]? = nil, source: String? = nil) {
         self.timestamp = timestamp
         self.occurredAt = occurredAt
         self.model = model
@@ -25,12 +29,17 @@ struct CodexUsageRecord: Codable, Equatable {
         self.cumulative = cumulative
         self.amounts = amounts
         self.responseSeconds = responseSeconds
+        self.requestKey = requestKey
+        self.aliases = aliases
+        self.source = source
         self.id = id ?? Self.fingerprint(timestamp: timestamp, cumulative: cumulative, amounts: amounts)
     }
     static func fingerprint(timestamp: String, cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        let data = try! encoder.encode(Identity(timestamp: timestamp, cumulative: cumulative, amounts: amounts))
+        return digest(try! encoder.encode(Identity(timestamp: timestamp, cumulative: cumulative, amounts: amounts)))
+    }
+    static func digest(_ data: Data) -> String {
         let digits = Array("0123456789abcdef".utf8)
         return String(decoding: SHA256.hash(data: data).flatMap { [digits[Int($0 >> 4)], digits[Int($0 & 15)]] }, as: UTF8.self)
     }
@@ -39,6 +48,51 @@ struct CodexUsageRecord: Codable, Equatable {
             && !model.isEmpty && model.utf8.count <= 200 && timestamp.utf8.count <= 64
             && (serviceTier?.utf8.count ?? 0) <= 64
             && (responseSeconds.map { $0.isFinite && $0 > 0 } ?? true)
+            && (requestKey.map { Self.isHash($0) } ?? true)
+            && (aliases.map { requestKey != nil && $0.count <= 64 && $0.allSatisfy(Self.isHash) } ?? true)
+            && (source.map { $0.range(of: #"^[A-Za-z0-9_.:/-]{1,128}$"#, options: .regularExpression) != nil } ?? true)
+    }
+    private static func isHash(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    static func merged(_ records: [CodexUsageRecord], warnings: inout Set<String>) -> [CodexUsageRecord] {
+        let valid = records.filter { $0.valid && $0.model != "codex-auto-review" }
+        var keys: [String: Set<String>] = [:]
+        for record in valid {
+            if let key = record.requestKey {
+                for alias in [record.id] + (record.aliases ?? []) { keys[alias, default: []].insert(key) }
+            }
+        }
+        if keys.values.contains(where: { $0.count > 1 }) { warnings.insert("部分重复记录的请求标识冲突，已优先采用明确标识的请求") }
+        let groups = Dictionary(grouping: valid.filter { $0.requestKey != nil || (keys[$0.id]?.count ?? 0) <= 1 }) { record in
+            if let key = record.requestKey ?? keys[record.id]?.first { return "request:" + key }
+            return "event:" + record.id
+        }
+        return groups.values.map { copies in
+            let native = copies.first { $0.source == "native" }
+            let preferNative = native.map { original in copies.contains { $0.amounts != original.amounts } } ?? false
+            let first = copies.min {
+                let left = ($0.source == "native") == preferNative ? 0 : 1
+                let right = ($1.source == "native") == preferNative ? 0 : 1
+                return left == right ? ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp) : left < right
+            }!
+            if copies.count == 1 { return first }
+            let models = Set(copies.map(\.model).filter { $0 != "未记录模型" && $0 != "未确认模型" })
+            let tiers = Set(copies.map { CodexTokenTier($0.serviceTier) }.filter { $0 != .unknown })
+            let conflict = models.count > 1 || copies.contains { $0.model == "未确认模型" }
+            let model = conflict ? "未确认模型" : models.first ?? "未记录模型"
+            let tierConflict = tiers.count > 1 || copies.contains { $0.serviceTier == "conflict" }
+            let tier: String? = conflict || tierConflict ? "conflict" : tiers.count == 1 ? (tiers.first == .fast ? "fast" : "default") : nil
+            if conflict || tierConflict { warnings.insert("重复记录的模型或档位冲突，无法确认的费用按 $0") }
+            let key = copies.compactMap(\.requestKey).first
+            let aliases = Set(copies.flatMap { [$0.id] + ($0.aliases ?? []) }).subtracting([first.id]).sorted()
+            if aliases.count > 64 { warnings.insert("单次请求的重复标识超过缓存上限，部分旧格式副本可能需要重新核对") }
+            return CodexUsageRecord(timestamp: first.timestamp, occurredAt: first.occurredAt, model: model,
+                serviceTier: tier, cumulative: first.cumulative, amounts: first.amounts, id: first.id,
+                responseSeconds: copies.compactMap(\.responseSeconds).max(), requestKey: key,
+                aliases: key == nil || aliases.isEmpty ? nil : Array(aliases.prefix(64)), source: first.source)
+        }.sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
     }
 }
 
@@ -113,6 +167,30 @@ extension CodexUsageSync {
         let timedSnapshot = try reader.read(now: now.addingTimeInterval(368), timeZone: TimeZone(secondsFromGMT: 0)!, sync: restarted)
         let timedStats = timedSnapshot.periods[0].performance[CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .standard)]!
         precondition(timedStats.samples == 1 && timedStats.requests == 3 && timedStats.average == 2500)
+        let aliasCloud = drive.appendingPathComponent("Alias Helper/Usage/v1")
+        let left = CodexUsageSync(cloud: aliasCloud, cache: root.appendingPathComponent("alias-left"), deviceID: UUID().uuidString, deviceName: "Left")
+        let right = CodexUsageSync(cloud: aliasCloud, cache: root.appendingPathComponent("alias-right"), deviceID: UUID().uuidString, deviceName: "Right")
+        let requestKey = CodexUsageRecord.digest(Data("response:PRIVATE_RESPONSE_ID".utf8))
+        let native = CodexUsageRecord(timestamp: first.timestamp.replacingOccurrences(of: "Z", with: ".000Z"),
+            occurredAt: first.occurredAt, model: first.model, serviceTier: first.serviceTier,
+            cumulative: first.cumulative, amounts: first.amounts, requestKey: requestKey, source: "native")
+        var linked = first
+        linked.requestKey = requestKey
+        precondition(left.exchange(local: [native], now: now).records.count == 1)
+        let joined = right.exchange(local: [linked], now: now.addingTimeInterval(1))
+        precondition(joined.records.count == 1 && joined.records[0].aliases?.contains(native.id) == true)
+        precondition(left.exchange(local: [native], now: now.addingTimeInterval(61)).records.count == 1)
+        func oldCopy(_ record: CodexUsageRecord) throws -> CodexUsageRecord {
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+            for key in ["requestKey", "aliases", "source"] { object.removeValue(forKey: key) }
+            return try JSONDecoder().decode(CodexUsageRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let oldNative = try oldCopy(native)
+        precondition(oldNative.id == CodexUsageRecord.fingerprint(timestamp: oldNative.timestamp, cumulative: oldNative.cumulative, amounts: oldNative.amounts), "Preserve the old wire fingerprint")
+        let migrated = CodexUsageSync(cloud: aliasCloud, cache: root.appendingPathComponent("alias-migrated"), deviceID: UUID().uuidString, deviceName: "Migrated")
+        let oldCopies = try [oldCopy(native), oldCopy(linked)]
+        precondition(migrated.exchange(local: oldCopies, now: now.addingTimeInterval(122)).records.count == 1,
+                     "New request aliases must also deduplicate cached copies from an older client")
         var invalidTiming = first
         invalidTiming.responseSeconds = -.infinity
         precondition(!invalidTiming.valid)
@@ -155,7 +233,7 @@ extension CodexUsageSync {
         let history = try historyReader.read(now: now.addingTimeInterval(488), timeZone: TimeZone(secondsFromGMT: 0)!, range: range, sync: historySync)
         let historicalTokens = try history.periods[1].total.total
         precondition(historicalTokens == 105)
-        let allowed: Set<String> = ["id", "timestamp", "occurredAt", "model", "serviceTier", "cumulative", "amounts", "responseSeconds"]
+        let allowed: Set<String> = ["id", "timestamp", "occurredAt", "model", "serviceTier", "cumulative", "amounts", "responseSeconds", "requestKey", "aliases", "source"]
         for case let url as URL in FileManager.default.enumerator(at: cloud, includingPropertiesForKeys: nil)! where url.pathExtension == "json" {
             let exported = try Data(contentsOf: url)
             let text = String(decoding: exported, as: UTF8.self)
@@ -266,7 +344,7 @@ final class CodexUsageSync {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         // CLI 查询和菜单栏进程可能同时写入；在独占访问中合并磁盘上的最新数据。
-        try coordinated(url, writing: true) { url in
+        try Self.coordinated(url, writing: true) { url in
             let previous = try? self.decode(self.readData(url))
             let combined = self.joined(batch, with: previous.flatMap { self.path(for: $0) == self.path(for: batch) ? $0 : nil })
             let data = try self.encoder.encode(combined)
@@ -277,7 +355,7 @@ final class CodexUsageSync {
         }
     }
 
-    private func coordinated(_ url: URL, writing: Bool, action: @escaping (URL) throws -> Void) throws {
+    static func coordinated(_ url: URL, writing: Bool, action: @escaping (URL) throws -> Void) throws {
         let coordinator = NSFileCoordinator()
         let timeout = DispatchWorkItem { coordinator.cancel() }
         DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeout)
@@ -293,21 +371,7 @@ final class CodexUsageSync {
     }
 
     private func merge(_ records: [CodexUsageRecord]) -> [CodexUsageRecord] {
-        let valid = records.filter { $0.valid && $0.model != "codex-auto-review" }
-        return Dictionary(grouping: valid, by: \.id).values.map { copies in
-            let first = copies[0]
-            if copies.count == 1 { return first }
-            let models = Set(copies.map(\.model).filter { $0 != "未记录模型" && $0 != "未确认模型" })
-            let tiers = Set(copies.map { CodexTokenTier($0.serviceTier) }.filter { $0 != .unknown })
-            let conflict = models.count > 1 || copies.contains { $0.model == "未确认模型" }
-            let model = conflict ? "未确认模型" : models.first ?? "未记录模型"
-            let tierConflict = tiers.count > 1 || copies.contains { $0.serviceTier == "conflict" }
-            let tier: String? = conflict || tierConflict ? "conflict" : tiers.count == 1 ? (tiers.first == .fast ? "fast" : "default") : nil
-            if conflict || tierConflict { warnings.insert("重复记录的模型或档位冲突，无法确认的费用按 $0") }
-            return CodexUsageRecord(timestamp: first.timestamp, occurredAt: first.occurredAt, model: model,
-                                    serviceTier: tier, cumulative: first.cumulative, amounts: first.amounts, id: first.id,
-                                    responseSeconds: copies.compactMap(\.responseSeconds).max())
-        }.sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
+        CodexUsageRecord.merged(records, warnings: &warnings)
     }
 
     private func readData(_ url: URL) throws -> Data {
@@ -367,7 +431,7 @@ final class CodexUsageSync {
                                 cloudBatches[path(for: copy)] = copy
                                 continue
                             }
-                            try coordinated(url, writing: false) { coordinatedURL in
+                            try Self.coordinated(url, writing: false) { coordinatedURL in
                                 let data = try self.readData(coordinatedURL)
                                 let batch = try self.decode(data)
                                 cloudBatches[self.path(for: batch)] = batch
@@ -394,7 +458,7 @@ final class CodexUsageSync {
                     if let remote = cloudBatches[key], remote.records == outgoing.records, remote.deviceName == deviceName { continue }
                     let url = cloud.appendingPathComponent(key)
                     try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try coordinated(url, writing: true) { url in
+                    try Self.coordinated(url, writing: true) { url in
                         let previous = try? self.decode(self.readData(url))
                         outgoing = self.joined(outgoing, with: previous.flatMap { self.path(for: $0) == key ? $0 : nil })
                         let data = try self.encoder.encode(outgoing)

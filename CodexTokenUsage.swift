@@ -180,6 +180,7 @@ struct CodexTokenUsageSnapshot {
     let skippedEvents: Int
     var devices: [CodexUsageDevice] = []
     var syncMessage: String?
+    var usageWarnings: [String] = []
 }
 
 enum CodexTokenUsageError: LocalizedError {
@@ -214,6 +215,9 @@ final class CodexTokenUsageReader {
             let thread_id: String?
             let turn_id: String?
             let usage: CodexTokenAmounts?
+            let response_id: String?
+            let thread_token_usage: CodexTokenAmounts?
+            let service_tier: String?
             let role: String?
         }
         struct ThreadSettings: Decodable {
@@ -224,18 +228,10 @@ final class CodexTokenUsageReader {
             let last_token_usage: CodexTokenAmounts?
         }
     }
-    private struct Identity: Hashable {
-        let timestamp: String
-        let cumulative: CodexTokenAmounts?
-        let amounts: CodexTokenAmounts
-    }
     private struct Event {
-        let identity: Identity
-        let date: Date
-        let group: CodexTokenUsageGroup
-        let costs: CodexTokenCosts
         var record: CodexUsageRecord
         var responseSpan: CodexResponseSpan? = nil
+        var date: Date { Date(timeIntervalSince1970: record.occurredAt) }
     }
     private struct FileState {
         var offset: UInt64 = 0
@@ -249,11 +245,12 @@ final class CodexTokenUsageReader {
         var firstOutput: Date?
         var lastOutput: Date?
         var previousUsage: Date?
-        var pendingUsage: (amounts: CodexTokenAmounts, date: Date, span: CodexResponseSpan?)?
+        var pendingUsage: (record: CodexUsageRecord, date: Date, span: CodexResponseSpan?)?
     }
 
     private let root: URL
     private let responseTiming: CodexResponseTimingReader
+    private let backgroundUsage: CodexBackgroundUsageReader?
     private var files: [String: FileState] = [:]
     private var retainedSince: Date?
     private let decoder = JSONDecoder()
@@ -269,11 +266,13 @@ final class CodexTokenUsageReader {
     private let nativeUsageMarker = Data("\"token_usage_record\"".utf8)
     private let outputMarker = Data("\"response_item\"".utf8)
 
-    init(root: URL = ProcessInfo.processInfo.environment["CODEX_HOME"].map {
-        URL(fileURLWithPath: $0, isDirectory: true)
-    } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")) {
-        self.root = root
-        responseTiming = CodexResponseTimingReader(root: root)
+    init(root: URL? = nil, backgroundLogs: URL? = nil) {
+        self.root = root ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        responseTiming = CodexResponseTimingReader(root: self.root)
+        let logs = backgroundLogs ?? (root == nil ? CodexBackgroundUsageReader.defaultDirectory : nil)
+        backgroundUsage = logs.map { CodexBackgroundUsageReader(logRoot: $0, cache: root == nil ? CodexBackgroundUsageReader.defaultCache : nil) }
     }
 
     private func consume(_ line: Data, state: inout FileState, since: Date) {
@@ -313,7 +312,16 @@ final class CodexTokenUsageReader {
                 span = CodexResponseSpan(threadID: thread, turnID: turn, firstOutput: first,
                                         lastOutput: last, previousUsage: state.previousUsage)
             }
-            state.pendingUsage = (amounts, date, span)
+            let native = CodexUsageRecord(timestamp: record.timestamp, occurredAt: date.timeIntervalSince1970,
+                model: record.payload.model ?? state.model, serviceTier: record.payload.service_tier,
+                cumulative: record.payload.thread_token_usage, amounts: amounts, source: "native")
+            var measured = native
+            let responseID = record.payload.response_id.flatMap { $0.isEmpty || $0.utf8.count > 256 ? nil : $0 }
+            measured.requestKey = CodexUsageRecord.digest(Data((responseID.map { "response:" + $0 } ?? "native:" + native.id).utf8))
+            state.pendingUsage = (measured, date, span)
+            if measured.model != "codex-auto-review", amounts.total > 0, date >= since {
+                state.events.append(Event(record: measured, responseSpan: span))
+            }
             state.previousUsage = date
             return
         }
@@ -336,17 +344,17 @@ final class CodexTokenUsageReader {
             return
         }
         guard date >= since, amounts.total > 0 else { return }
-        let span = state.pendingUsage.flatMap { pending in
-            pending.amounts == amounts && date >= pending.date && date.timeIntervalSince(pending.date) < 5 ? pending.span : nil
+        let pending = state.pendingUsage.flatMap { pending in
+            let sameTotal = pending.record.cumulative.flatMap { native in
+                info.total_token_usage.map { native.input == $0.input && native.output == $0.output }
+            }
+            // 压缩请求会使原生累计值领先旧计数器；本次分项相同也可确认是同一次响应。
+            return date >= pending.date && (pending.record.amounts == amounts || sameTotal == true) ? pending : nil
         }
-        state.events.append(Event(identity: Identity(timestamp: record.timestamp,
-                                                     cumulative: info.total_token_usage, amounts: amounts),
-                                  date: date, group: CodexTokenUsageGroup(model: state.model, tier: CodexTokenTier(state.serviceTier)),
-                                  costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts,
-                                                                    serviceTier: state.serviceTier),
-                                  record: CodexUsageRecord(timestamp: record.timestamp, occurredAt: date.timeIntervalSince1970,
-                                      model: state.model, serviceTier: state.serviceTier, cumulative: info.total_token_usage, amounts: amounts),
-                                  responseSpan: span))
+        let span = pending.flatMap { $0.record.amounts == amounts ? $0.span : nil }
+        state.events.append(Event(record: CodexUsageRecord(timestamp: record.timestamp, occurredAt: date.timeIntervalSince1970,
+            model: state.model, serviceTier: state.serviceTier, cumulative: info.total_token_usage, amounts: amounts,
+            requestKey: pending?.record.requestKey), responseSpan: span))
     }
 
     func read(now: Date = Date(), timeZone: TimeZone = .current,
@@ -432,45 +440,35 @@ final class CodexTokenUsageReader {
                 } catch { unreadable += 1 }
             }
         }
-        guard foundDirectory || sync != nil else { throw CodexTokenUsageError.missingSessions }
         files = files.filter { liveFiles.contains($0.key) }
+        let background = backgroundUsage?.read()
+        guard foundDirectory || sync != nil || !(background?.records.isEmpty ?? true) else { throw CodexTokenUsageError.missingSessions }
         let local = files.values.flatMap(\.events).map { event in
             var event = event
             if let span = event.responseSpan { event.record.responseSeconds = responseTiming.seconds(for: span) }
             return event
         }
-        let shared = sync?.exchange(local: local.map(\.record), selectedDevice: device, now: now)
-        let events = shared.map { result in
-            result.records.filter { $0.occurredAt >= querySince.timeIntervalSince1970 && $0.occurredAt <= now.timeIntervalSince1970 }.map { record in
-                Event(identity: Identity(timestamp: record.timestamp, cumulative: record.cumulative, amounts: record.amounts),
-                    date: Date(timeIntervalSince1970: record.occurredAt),
-                    group: CodexTokenUsageGroup(model: record.model, tier: CodexTokenTier(record.serviceTier)),
-                    costs: CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts, serviceTier: record.serviceTier), record: record)
-            }
-        } ?? local
-        let durations = Dictionary(events.compactMap { event in
-            event.record.responseSeconds.map { (event.identity, $0) }
-        }, uniquingKeysWith: max)
-        var seen = Set<Identity>()
-        for event in events where event.date >= querySince && event.date <= now {
-            // 分叉历史或重复副本保留事件时间和累计值，跨文件只统计一次。
-            guard seen.insert(event.identity).inserted else { continue }
-            for index in periods.indices where event.date >= periods[index].interval.start
-                && event.date < periods[index].interval.end {
-                periods[index].models[event.group] = try (periods[index].models[event.group] ?? CodexTokenAmounts())
-                    .adding(event.identity.amounts)
-                periods[index].costs[event.group] = (periods[index].costs[event.group] ?? CodexTokenCosts())
-                    .adding(event.costs)
-                var measured = event.record
-                measured.responseSeconds = durations[event.identity]
-                periods[index].performance[event.group, default: CodexOutputPerformance()].include(measured)
+        let raw = local.map(\.record) + (background?.records ?? [])
+        var warnings = Set(background?.warnings ?? [])
+        let shared = sync?.exchange(local: raw, selectedDevice: device, now: now)
+        let records = shared?.records ?? CodexUsageRecord.merged(raw, warnings: &warnings)
+        for record in records where record.occurredAt >= querySince.timeIntervalSince1970 && record.occurredAt <= now.timeIntervalSince1970 {
+            let date = Date(timeIntervalSince1970: record.occurredAt)
+            let group = CodexTokenUsageGroup(model: record.model, tier: CodexTokenTier(record.serviceTier))
+            let costs = CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts, serviceTier: record.serviceTier)
+            for index in periods.indices where date >= periods[index].interval.start && date < periods[index].interval.end {
+                periods[index].models[group] = try (periods[index].models[group] ?? CodexTokenAmounts()).adding(record.amounts)
+                periods[index].costs[group] = (periods[index].costs[group] ?? CodexTokenCosts()).adding(costs)
+                periods[index].performance[group, default: CodexOutputPerformance()].include(record)
             }
         }
         for period in periods { _ = try period.total }
         var snapshot = CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: timeZone.identifier,
-                                       unreadableFiles: unreadable, skippedEvents: files.values.reduce(0) { $0 + $1.skipped })
+                                       unreadableFiles: unreadable + (background?.unreadable ?? 0),
+                                       skippedEvents: files.values.reduce(0) { $0 + $1.skipped } + (background?.skipped ?? 0))
         snapshot.devices = shared?.devices ?? []
         snapshot.syncMessage = shared?.message
+        snapshot.usageWarnings = warnings.sorted()
         return snapshot
     }
 }

@@ -18,7 +18,7 @@
 - 「按日期区间查询…」可选择开始和结束日期（按本机时区，包含首尾当天），查询结果作为额外一行显示在今日、当前周额度下方，沿用「区间金额 → 模型金额 → token 分项」布局。可查询保留下来的历史会话和归档；范围变更在后台重算，查询范围仅本次运行有效。
 - 金额按 [OpenAI 官方 API 单价](https://developers.openai.com/api/docs/pricing)估算（2026-11-01 核对），缓存写入采用默认 30 分钟价格；超过 272K 输入的请求按长上下文价格逐次计算后汇总，避免把日/月累计输入当成长上下文。读取日志中「已应用设置」事件的 `thread_settings.service_tier`：`default` / `standard` 按标准价，`fast` / `priority` 按标准价 ×2，分别应用于输入、缓存、输出和其中推理费用，原始 token 数量不变；按模型和档位分别汇总，`fast` 与 `priority` 合并为 Fast，标准、Fast、未知各占一行，一级金额为各组之和。
 - 当前确认 GPT-6 Astra、GPT-6.1 Sol / Terra、GPT-6 Sol / Luna、GPT-5.6 Sol / Terra / Luna；未确认单价的模型（包括第三方模型）、未记录或不支持的档位，以及缺少计价所需 token 分项的记录，统一按 $0 计入。历史档位以日志事件为准，不用当前配置推测过去。金额是 API 参考价，不按套餐额度的 2.5 倍计算，未计地区附加费和工具费用；日志未记录的服务端回退档位、其他缓存寿命无法还原，不代表订阅实际账单。
-- Token 统计只读 `$CODEX_HOME/sessions` 与 `archived_sessions`（默认 `~/.codex`），不依赖 OpenCodex，也不上传会话内容；按每次请求的事件时间归入对应统计区间，日期和周期起止时间以本机时区展示。`codex-auto-review` 完全排除，不显示条目，也不计入任何区间的 token、缓存分项或费用；未确认单价的其他模型仍保留并按 $0 估算。模型标签不能用于还原代理背后的真实模型，也不是官方计费账单。清理、缺失或未写入本机的历史不会被统计；无法读取的文件及缺失/异常用量会在菜单提示。读取在后台执行，已读文件只处理追加内容。
+- Token 统计只读 `$CODEX_HOME/sessions` 与 `archived_sessions`（默认 `~/.codex`），同时读取桌面应用后台用量日志，不依赖 OpenCodex，也不上传会话内容；按每次请求的事件时间归入对应统计区间，日期和周期起止时间以本机时区展示。`codex-auto-review` 完全排除，不显示条目，也不计入任何区间的 token、缓存分项或费用；未确认单价的其他模型仍保留并按 $0 估算。模型标签不能用于还原代理背后的真实模型，也不是官方计费账单。清理、缺失或未写入本机的历史不会被统计；无法读取的文件及缺失/异常用量会在菜单提示。读取在后台执行，已读文件只处理追加内容。
 - 默认每 10 秒刷新 Codex 额度，WorkBuddy、Trae 仅在启用后刷新。菜单中的「设置…」可填写 5–3600 秒，并提供「启用 WorkBuddy 功能」「启用 Trae 代理」「启用 OpenCodex 功能」三个开关，未保存过设置时默认均不勾选，已有明确保存的选择继续保留。OpenCodex 不勾选时不检测安装或运行状态，隐藏其安装提示和相关菜单；保存后会提示成功并将按钮置灰，修改设置后按钮重新启用。关闭「启用 Trae 代理」会立即停用 Trae 路由、隐藏 Trae 菜单区块并清空其临时状态，WorkBuddy 不受影响。唤醒 Mac 后自动刷新；上次请求尚未结束时不会重复发起。
 - 读取失败时显示 ⚠，保留并明确标记上次结果，不会将未知额度显示为 0%。
 - 当前菜单栏优先显示 `codex` 额度；接口返回多个额度组时，全部列在菜单中。
@@ -74,7 +74,7 @@ Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Appli
 
 若希望开机自动运行，可先将应用移到固定目录，再在「系统设置 → 通用 → 登录项」中添加该应用。
 
-源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`CodexResponseTiming.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
+源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`CodexResponseTiming.swift`、`CodexBackgroundUsage.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
 
 参考：[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)。
 
@@ -100,3 +100,12 @@ Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Appli
 耗时从 Codex 原生 `logs_*.sqlite` 的请求起始日志，到会话记录中该次模型的最后一次输出，包含首字等待，排除模型输出结束后等待工具执行的时间。只读本地数据库，通过线程、轮次、时间及原生用量记录配对；无数据库、日志被清理、用量不匹配或缺失可靠时序时，该请求不参与测速，没有有效样本显示 `—`。这是客户端响应效率，包含网络和等待时间；不等同于服务端纯解码速度，也不依赖 OpenCodex。
 
 iCloud 仅增加可选的响应秒数字段，事件指纹不变，重复记录仍只算一次；旧版文件和没有测速信息的设备可继续合并。其他设备升级后可贡献测速样本；不额外同步数据库、响应标识或对话内容。
+
+
+## 后台用量与零价展示
+
+- 同时处理会话中的 `token_count` 和原生 `token_usage_record`，补录只有原生记录的请求。以响应标识的哈希和旧事件指纹关联同一次调用，会话事件、原生事件、复制历史及 iCloud 副本只计一次；历史上已经存在的指纹保持不变。为正确识别这些别名，所有设备都应升级至 1.9.7 或以上。
+- 读取 `~/Library/Logs/com.openai.codex/` 中明确的 `ephemeral_generation_token_usage` 事件，不对功能名作白名单限制。标题、描述、后台建议、安全检查及其他符合该事件格式的后台请求均会纳入；失败请求若报告非零用量，也会计入。
+- 后台记录按日志给出的模型、档位、输入、缓存和输出字段统计，不依据任务名称猜模型。原生补录若没有明确记录请求档位，不从其他请求推定；缺失价格或计价必需字段时仍按 $0；菜单隐藏四舍五入后显示为 `$0.00` 的模型与区间，但底层 token、去重和同步数据仍保留。诊断命令仍展示完整用量。
+- 后台用量元数据缓存于 `~/Library/Application Support/Codex Helper/BackgroundUsage/v1.json`，日志轮换后保留已读取的数据。缓存与 iCloud 不包含原始日志、标题内容、提示词或凭据；响应标识只存哈希。
+- 记忆任务只要留下明确的原生或后台用量记录就会计入。任务状态数据库中的“完成／失败”记录不是 token 凭据，不从状态或时间推算用量；未记录或在采集前已删除的历史无法还原。`codex-auto-review` 继续按此前约定完全排除。
