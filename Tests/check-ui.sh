@@ -6,6 +6,14 @@ mkdir -p .build/ui-check
 python3 - <<'PY'
 from pathlib import Path
 source = Path('CodexQuotaBar.swift').read_text().split('@main\nstruct CodexHelperMain')[0].replace('startingUpdater: true', 'startingUpdater: false')
+source += '''
+extension AppDelegate {
+    func setUsageForUICheck(_ snapshot: CodexTokenUsageSnapshot, range: DateInterval) {
+        tokenUsage = snapshot
+        tokenUsageRange = range
+    }
+}
+'''
 Path('.build/ui-check/Views.swift').write_text(source)
 PY
 swiftc -swift-version 5 -target arm64-apple-macosx15.0 -module-cache-path .build/swift-cache \

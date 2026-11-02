@@ -347,7 +347,6 @@ func menuInfo(_ text: String) -> NSView {
     let height = ceil(field.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: 292, height: 10_000)).height)
     field.frame = NSRect(x: 14, y: 4, width: 292, height: height)
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: height + 8))
-    view.toolTip = text
     view.addSubview(field)
     return view
 }
@@ -696,11 +695,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             menu.addItem(item)
             return item
         }
-        @discardableResult func info(_ text: String) -> NSMenuItem {
+        @discardableResult func info(_ text: String, in destination: NSMenu? = nil) -> NSMenuItem {
             let item = NSMenuItem()
             item.view = menuInfo(text)
             item.isEnabled = false
-            menu.addItem(item)
+            (destination ?? menu).addItem(item)
             return item
         }
         func installPrompt(_ title: String, copyText: String) {
@@ -750,7 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let error = error { info("⚠ " + error) }
         if stale, quota != nil { info("显示上次结果，请刷新后确认") }
         if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
-        section("费用估算 · USD").toolTip = "官方 API 参考价，Fast / priority 为标准价 ×2，默认 30 分钟缓存；未确认模型单价或档位按 $0，非订阅实际账单。"
+        section("费用估算 · USD")
         if let tokenUsage {
             if usageCloudEnabled {
                 let name = usageDevice.flatMap { id in tokenUsage.devices.first { $0.id == id }?.name } ?? (usageDevice == nil ? "全部设备" : "设备暂不可用")
@@ -766,10 +765,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     item.target = self
                     item.representedObject = device.id
                     item.state = usageDevice == device.id ? .on : .off
-                    item.toolTip = device.updated.map { "数据更新于 " + $0.formatted(date: .numeric, time: .standard) } ?? "暂无已同步记录"
                     choices.addItem(item)
+                    info(device.updated.map { "数据更新于 " + $0.formatted(date: .numeric, time: .standard) } ?? "暂无已同步记录", in: choices)
                 }
-                scope.toolTip = "按提供记录的设备查看；复制历史可能重叠，全部设备总额只计算一次"
                 scope.submenu = choices
                 menu.addItem(scope)
                 if let message = tokenUsage.syncMessage { info(message) }
@@ -808,11 +806,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     periodMenu.addItem(empty)
                 }
                 item.submenu = periodMenu
-                item.toolTip = "\(period.interval.start.formatted(date: .numeric, time: .shortened)) 至 \(period.interval.end.formatted(date: .numeric, time: .shortened)) · \(tokenUsage.timeZone) · 按日志模型标签分类"
+                periodMenu.addItem(.separator())
+                var intervalText = "\(period.interval.start.formatted(date: .numeric, time: .shortened)) 至 \(period.interval.end.formatted(date: .numeric, time: .shortened))\n时区：\(tokenUsage.timeZone)"
                 if let range = tokenUsageRange, period.interval == range {
                     let end = range.end.addingTimeInterval(-1)
-                    item.toolTip = "\(range.start.formatted(date: .numeric, time: .omitted)) 至 \(end.formatted(date: .numeric, time: .omitted))（含首尾当天）· \(tokenUsage.timeZone)"
+                    intervalText = "\(range.start.formatted(date: .numeric, time: .omitted)) 至 \(end.formatted(date: .numeric, time: .omitted))（含首尾当天）\n时区：\(tokenUsage.timeZone)"
                 }
+                info(intervalText, in: periodMenu)
                 menu.addItem(item)
             }
             if quota?.weeklyRange() == nil { info("当前周额度 · 周期暂不可用") }
