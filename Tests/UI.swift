@@ -31,10 +31,26 @@ struct UICheck {
             precondition(fields[0].font!.pointSize > fields[1].font!.pointSize)
         }
         precondition(quotaHeading("Codex", plan: nil).subviews.count == 1)
+        let warning = "⚠ 无法读取额度，请确认 Codex 已使用 ChatGPT 账户登录"
+        let shortInfo = menuInfo("显示上次结果，请刷新后确认")
+        let longInfo = menuInfo(warning)
+        precondition(longInfo.frame.width == shortInfo.frame.width)
+        precondition(longInfo.frame.height > shortInfo.frame.height)
+        precondition((longInfo.subviews.first as? NSTextField)?.stringValue == warning)
+        func menuWidth(_ view: NSView) -> CGFloat {
+            let menu = NSMenu()
+            let item = NSMenuItem()
+            item.view = view
+            menu.addItem(item)
+            return menu.size.width
+        }
+        precondition(menuWidth(longInfo) == menuWidth(shortInfo), "Long warnings must not widen the menu")
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             app.appearance = NSAppearance(named: appearance)
             let theme = appearance == .aqua ? "light" : "dark"
-            for (name, view) in [("heading", quotaHeading("Codex", plan: "prolite")),
+            for (name, view) in [("warning", menuInfo(warning)),
+                                  ("sync-warning", menuInfo("⚠ iCloud 暂不可用，保留本机及已缓存的其他设备用量；部分用量尚未写入 iCloud，下次自动重试")),
+                                  ("heading", quotaHeading("Codex", plan: "prolite")),
                                   ("heading-no-plan", quotaHeading("Codex", plan: nil)),
                                   ("settings", settings.contentView!), ("date", dateWindow.contentView!),
                                   ("quota", quotaRow(Window(usedPercent: 6, windowDurationMins: 10080, resetsAt: 1793659200), stale: false)),
@@ -44,7 +60,7 @@ struct UICheck {
                 view.layoutSubtreeIfNeeded()
                 for child in view.subviews {
                     precondition(view.bounds.contains(child.frame), "Clipped view in \(name): \(child.frame)")
-                    if let text = child as? NSTextField, !text.isEditable {
+                    if let text = child as? NSTextField, !text.isEditable, text.preferredMaxLayoutWidth == 0 {
                         precondition(text.intrinsicContentSize.width <= text.frame.width + 1,
                                      "Truncated label in \(name): \(text.stringValue)")
                     }

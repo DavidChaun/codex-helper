@@ -339,6 +339,19 @@ private func symbol(_ name: String, frame: NSRect, color: NSColor = .controlAcce
     return image
 }
 
+func menuInfo(_ text: String) -> NSView {
+    let field = NSTextField(wrappingLabelWithString: text)
+    field.font = .systemFont(ofSize: 12)
+    field.textColor = .secondaryLabelColor
+    field.preferredMaxLayoutWidth = 268
+    let height = ceil(field.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: 268, height: 10_000)).height)
+    field.frame = NSRect(x: 26, y: 4, width: 268, height: height)
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: height + 8))
+    view.toolTip = text
+    view.addSubview(field)
+    return view
+}
+
 func quotaHeading(_ name: String, plan: String?) -> NSView {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 42))
     let title = label(name, frame: NSRect(x: 26, y: 10, width: plan == nil ? 268 : 180, height: 25), size: 18, weight: .bold)
@@ -684,7 +697,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             return item
         }
         @discardableResult func info(_ text: String) -> NSMenuItem {
-            let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            let item = NSMenuItem()
+            item.view = menuInfo(text)
             item.isEnabled = false
             menu.addItem(item)
             return item

@@ -3,6 +3,24 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.2</title>
+            <pubDate>Mon, 02 Nov 2026 11:14:01 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.2</link>
+            <sparkle:version>56</sparkle:version>
+            <sparkle:shortVersionString>1.9.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.2
+
+- 修复额度读取失败等长提示撑宽菜单、与额度卡片宽度不一致的问题。
+- 错误、同步状态及积分提示在固定宽度内自动换行，保留完整文字及悬停提示。
+- 保留 Codex / ProLite 强调展示及现有代理、统计功能。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。沿用现有 Sparkle 签名和自动更新通道。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.2/Codex-Helper-Swift-1.9.2.zip" length="2349734" type="application/octet-stream" sparkle:edSignature="gV9ypJz3m+GyBlsTn60oILDG3ZFRRl57S16nAeLfCzG09OmCDfXPcEP/Rt6LnjTu+SnSxQpbkIpscZF9bN1SCg=="/>
+        </item>
+        <item>
             <title>1.9.1</title>
             <pubDate>Mon, 02 Nov 2026 11:09:04 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.1</link>
