@@ -343,9 +343,9 @@ func menuInfo(_ text: String) -> NSView {
     let field = NSTextField(wrappingLabelWithString: text)
     field.font = .systemFont(ofSize: 12)
     field.textColor = .secondaryLabelColor
-    field.preferredMaxLayoutWidth = 268
-    let height = ceil(field.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: 268, height: 10_000)).height)
-    field.frame = NSRect(x: 26, y: 4, width: 268, height: height)
+    field.preferredMaxLayoutWidth = 292
+    let height = ceil(field.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: 292, height: 10_000)).height)
+    field.frame = NSRect(x: 14, y: 4, width: 292, height: height)
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: height + 8))
     view.toolTip = text
     view.addSubview(field)
@@ -354,12 +354,12 @@ func menuInfo(_ text: String) -> NSView {
 
 func quotaHeading(_ name: String, plan: String?) -> NSView {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 42))
-    let title = label(name, frame: NSRect(x: 26, y: 10, width: plan == nil ? 268 : 180, height: 25), size: 18, weight: .bold)
+    let title = label(name, frame: NSRect(x: 14, y: 10, width: plan == nil ? 292 : 192, height: 25), size: 18, weight: .bold)
     title.toolTip = name
     view.addSubview(title)
     if let plan {
         let text = plan.replacingOccurrences(of: "_", with: "").lowercased() == "prolite" ? "ProLite" : plan.capitalized
-        let badge = label(text, frame: NSRect(x: 210, y: 13, width: 84, height: 19), size: 12, weight: .semibold, color: .controlAccentColor)
+        let badge = label(text, frame: NSRect(x: 222, y: 13, width: 84, height: 19), size: 12, weight: .semibold, color: .controlAccentColor)
         badge.alignment = .right
         badge.toolTip = text
         view.addSubview(badge)
@@ -824,7 +824,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let tokenUsageError { info("⚠ Token 统计：" + tokenUsageError + (tokenUsage == nil ? "" : "（保留上次结果）")) }
         let dateQuery = NSMenuItem(title: "按日期区间查询…", action: #selector(showTokenDateRange), keyEquivalent: "")
         dateQuery.target = self
-        dateQuery.image = NSImage(systemSymbolName: "calendar", accessibilityDescription: nil)
         menu.addItem(dateQuery)
         menu.addItem(.separator())
     if workBuddyEnabled {
@@ -857,7 +856,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         importAccount.target = self
         accountsMenu.addItem(importAccount)
         accountsItem.submenu = accountsMenu
-        accountsItem.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         menu.addItem(accountsItem)
         let modelsItem = NSMenuItem(title: "模型列表（\(workBuddyModels.count)）", action: nil, keyEquivalent: "")
         let modelsMenu = NSMenu()
@@ -873,7 +871,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             modelsMenu.addItem(item)
         }
         modelsItem.submenu = modelsMenu
-        modelsItem.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
         menu.addItem(modelsItem)
         let moreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let moreMenu = NSMenu()
@@ -933,7 +930,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         importTrae.target = self
         traeAccountsMenu.addItem(importTrae)
         traeAccountsItem.submenu = traeAccountsMenu
-        traeAccountsItem.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         menu.addItem(traeAccountsItem)
         let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
         let traeModelsMenu = NSMenu()
@@ -949,7 +945,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             traeModelsMenu.addItem(item)
         }
         traeModelsItem.submenu = traeModelsMenu
-        traeModelsItem.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
         menu.addItem(traeModelsItem)
         let traeMoreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let traeMoreMenu = NSMenu()
@@ -1048,16 +1043,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
                                 keyEquivalent: "")
         update.target = updaterController
-        update.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
         update.isEnabled = updaterController.updater.canCheckForUpdates
         menu.addItem(update)
         let settings = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
-        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(settings)
         let debug = NSMenuItem(title: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
         debug.target = self
-        debug.image = NSImage(systemSymbolName: "ant", accessibilityDescription: nil)
         debug.state = ProxyDebugLog.enabled ? .on : .off
         debug.toolTip = "仅本次运行有效；记录完整请求文本到 ~/Downloads/CodexHelper-Debug，可能包含私人内容"
         menu.addItem(debug)
@@ -1069,7 +1061,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 Codex Helper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
-        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(quit)
         status.menu = menu
     }

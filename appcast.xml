@@ -3,6 +3,24 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.3</title>
+            <pubDate>Mon, 02 Nov 2026 11:28:22 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.3</link>
+            <sparkle:version>57</sparkle:version>
+            <sparkle:shortVersionString>1.9.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.3
+
+- 统一菜单中 Codex 标题、提示文字、统计和操作项的左边线，修复不同类型菜单项缩进不一致的问题。
+- 去掉菜单操作图标带来的额外缩进；层级由字号、颜色和分组体现，额度卡片内部保留一致内边距。
+- 保留长提示自动换行、ProLite 强调显示和原有子菜单、快捷键操作。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。沿用现有 Sparkle 签名和自动更新通道。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.3/Codex-Helper-Swift-1.9.3.zip" length="2349280" type="application/octet-stream" sparkle:edSignature="U5RmSzp2M4aNtFkvH+aaz8RtPeMq87M5GsqWloYwZZND7p5DaOLUZxYijgD4CruoYCuKomkXwjhYh4slCcjmBQ=="/>
+        </item>
+        <item>
             <title>1.9.2</title>
             <pubDate>Mon, 02 Nov 2026 11:14:01 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.2</link>

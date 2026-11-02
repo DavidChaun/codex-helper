@@ -32,6 +32,8 @@ struct UICheck {
         }
         precondition(quotaHeading("Codex", plan: nil).subviews.count == 1)
         let warning = "⚠ 无法读取额度，请确认 Codex 已使用 ChatGPT 账户登录"
+        precondition(quotaHeading("Codex", plan: "prolite").subviews[0].frame.minX == 14)
+        precondition(menuInfo("提示").subviews[0].frame.minX == 14)
         let shortInfo = menuInfo("显示上次结果，请刷新后确认")
         let longInfo = menuInfo(warning)
         precondition(longInfo.frame.width == shortInfo.frame.width)
