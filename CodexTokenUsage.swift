@@ -161,7 +161,6 @@ struct CodexOutputPerformance {
         "tok/s avg: " + (average.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—")
     }
     var sampleLabel: String { "测速样本：\(samples) / \(requests) 次请求" }
-    static let explanation = "有效样本输出 token（含推理）总量 ÷ 请求耗时总和。耗时从请求开始至最后一次模型输出，包含首字等待，不包含随后工具执行；缺少可靠时序的请求不参与。"
 
     mutating func include(_ record: CodexUsageRecord) {
         requests += 1

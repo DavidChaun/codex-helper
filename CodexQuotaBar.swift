@@ -792,7 +792,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     let price = CodexTokenPricing.dollars(costs.total)
                     let performance = period.performance[group] ?? CodexOutputPerformance()
                     let modelItem = NSMenuItem(title: "\(group.title) · \(price) · \(performance.label)", action: nil, keyEquivalent: "")
-                    modelItem.toolTip = CodexOutputPerformance.explanation
                     let details = NSMenu()
                     details.autoenablesItems = false
                     for text in [performance.label, performance.sampleLabel] + costs.rows(amounts: amounts) + ["缓存已计入输入", "推理已计入输出"] {
