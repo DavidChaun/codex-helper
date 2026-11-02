@@ -305,17 +305,60 @@ func readQuota() throws -> Quota {
     throw Date() >= deadline ? QueryError.timeout : QueryError.request
 }
 
+private final class CardSurface: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
+        NSColor.controlBackgroundColor.withAlphaComponent(0.65).setFill()
+        path.fill()
+        NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
+        path.lineWidth = 0.5
+        path.stroke()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+private func label(_ text: String, frame: NSRect, size: CGFloat = 13,
+                   weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField {
+    let field = NSTextField(labelWithString: text)
+    field.frame = frame
+    field.font = .systemFont(ofSize: size, weight: weight)
+    field.textColor = color
+    field.lineBreakMode = .byTruncatingTail
+    return field
+}
+
+private func symbol(_ name: String, frame: NSRect, color: NSColor = .controlAccentColor) -> NSImageView {
+    let image = NSImageView(frame: frame)
+    image.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+    image.contentTintColor = color
+    image.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+    return image
+}
+
+private func menuHeader() -> NSView {
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 58))
+    view.addSubview(symbol("square.stack.3d.up.fill", frame: NSRect(x: 18, y: 17, width: 30, height: 30)))
+    view.addSubview(label("Codex Helper", frame: NSRect(x: 60, y: 29, width: 242, height: 21), size: 16, weight: .semibold))
+    view.addSubview(label("额度与用量，一目了然", frame: NSRect(x: 60, y: 10, width: 242, height: 17), size: 11, color: .secondaryLabelColor))
+    return view
+}
+
 func quotaRow(_ window: Window, stale: Bool) -> NSView {
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: 268, height: 76))
-    let title = NSTextField(labelWithString: "\(window.label)额度")
-    title.font = .systemFont(ofSize: 13, weight: .medium)
-    title.frame = NSRect(x: 14, y: 51, width: 110, height: 18)
-    let value = NSTextField(labelWithString: "剩余 \(window.remaining)%")
-    value.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 88))
+    let card = CardSurface(frame: NSRect(x: 12, y: 4, width: 296, height: 80))
+    view.addSubview(card)
+    let title = label("\(window.label)额度", frame: NSRect(x: 26, y: 58, width: 170, height: 18), weight: .medium)
+    let value = label("\(window.remaining)%", frame: NSRect(x: 198, y: 47, width: 96, height: 32), size: 25, weight: .semibold)
+    value.font = .monospacedDigitSystemFont(ofSize: 25, weight: .semibold)
     value.alignment = .right
-    value.frame = NSRect(x: 124, y: 51, width: 130, height: 18)
     value.textColor = stale ? .secondaryLabelColor : window.remaining <= 10 ? .systemRed : .labelColor
-    let bar = NSProgressIndicator(frame: NSRect(x: 14, y: 32, width: 240, height: 10))
+    value.setAccessibilityLabel("\(window.label)额度剩余 \(window.remaining)%" + (stale ? "，上次结果" : ""))
+    let remaining = label(stale ? "上次结果" : "剩余额度", frame: NSRect(x: 26, y: 40, width: 170, height: 16), size: 10, color: .secondaryLabelColor)
+    let bar = NSProgressIndicator(frame: NSRect(x: 26, y: 29, width: 268, height: 6))
     bar.isIndeterminate = false
     bar.minValue = 0
     bar.maxValue = 100
@@ -328,11 +371,8 @@ func quotaRow(_ window: Window, stale: Bool) -> NSView {
         formatter.dateFormat = "M月d日 HH:mm"
         reset = "\(formatter.string(from: Date(timeIntervalSince1970: timestamp))) 重置"
     } else { reset = "重置时间暂不可用" }
-    let subtitle = NSTextField(labelWithString: reset)
-    subtitle.font = .systemFont(ofSize: 11)
-    subtitle.textColor = .secondaryLabelColor
-    subtitle.frame = NSRect(x: 14, y: 9, width: 240, height: 17)
-    [title, value, bar, subtitle].forEach { view.addSubview($0) }
+    let subtitle = label(reset, frame: NSRect(x: 26, y: 9, width: 268, height: 16), size: 10, color: .secondaryLabelColor)
+    [title, value, remaining, bar, subtitle].forEach { view.addSubview($0) }
     return view
 }
 
@@ -352,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var refreshing = false
     private let tokenUsageReader = CodexTokenUsageReader()
     private let tokenUsageQueue = DispatchQueue(label: "local.codex.helper.token-usage", qos: .utility)
+    private lazy var usageSync = CodexUsageSync()
     private var tokenUsage: CodexTokenUsageSnapshot?
     private var tokenUsageError: String?
     private var tokenUsageBusy = false
@@ -367,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var workBuddyEnabledButton: NSButton?
     var traeEnabledButton: NSButton?
     var openCodexEnabledButton: NSButton?
+    var usageCloudEnabledButton: NSButton?
     var settingsSaveButton: NSButton?
     var ocxStatusText = "OpenCodex Checking…"
     var ocxStatusItem: NSMenuItem?
@@ -396,6 +438,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var openCodexEnabled: Bool {
         featureDefaults.bool(forKey: "openCodexEnabled")
     }
+    var usageCloudEnabled: Bool { featureDefaults.bool(forKey: "usageCloudEnabled") }
+    private var usageDevice: String? { featureDefaults.string(forKey: "usageDevice") }
     // 两条路由各自判断：开的那个能用就起 listener，两个都不可用才停。
     var workBuddyRouteAvailable: Bool { workBuddyEnabled && workBuddyCLIInstalled }
     // 池里已有账号时，即使本机 storage.json 不在也仍可服务（Token 已保存在账号池）。
@@ -581,11 +625,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         tokenUsageBusy = true
         let requestedRange = tokenUsageRange
         let requestedWeek = quota?.weeklyRange()
+        let requestedCloud = usageCloudEnabled
+        let requestedDevice = usageDevice
         tokenUsageQueue.async {
-            let result = Result { try self.tokenUsageReader.read(weeklyRange: requestedWeek, range: requestedRange) }
+            let result = Result { try self.tokenUsageReader.read(weeklyRange: requestedWeek, range: requestedRange,
+                sync: requestedCloud ? self.usageSync : nil, device: requestedDevice) }
             DispatchQueue.main.async {
                 self.tokenUsageBusy = false
-                guard self.tokenUsageRange == requestedRange, self.quota?.weeklyRange() == requestedWeek else {
+                guard self.tokenUsageRange == requestedRange, self.quota?.weeklyRange() == requestedWeek,
+                      self.usageCloudEnabled == requestedCloud, self.usageDevice == requestedDevice else {
                     self.refreshTokenUsage()
                     return
                 }
@@ -622,6 +670,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
+        menu.minimumWidth = 320
+        let header = NSMenuItem()
+        header.view = menuHeader()
+        menu.addItem(header)
+        @discardableResult func section(_ title: String) -> NSMenuItem {
+            let item = NSMenuItem.sectionHeader(title: title)
+            menu.addItem(item)
+            return item
+        }
         @discardableResult func info(_ text: String) -> NSMenuItem {
             let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -658,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let quota = quota, !quota.buckets.isEmpty {
             for (id, bucket) in quota.buckets {
                 let name = bucket.limitName ?? (id == "codex" ? "Codex" : id)
-                info(name + (bucket.planType.map { " · \($0.capitalized)" } ?? ""))
+                section(name + (bucket.planType.map { " · \($0.capitalized)" } ?? ""))
                 if bucket.windows.isEmpty { info("此账户暂无额度窗口数据") }
                 for window in bucket.windows {
                     let item = NSMenuItem()
@@ -673,11 +730,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let error = error { info("⚠ " + error) }
         if stale, quota != nil { info("显示上次结果，请刷新后确认") }
         if error != nil || (stale && quota != nil) { menu.addItem(.separator()) }
-        info("费用估算（USD）").toolTip = "官方 API 参考价，Fast / priority 为标准价 ×2，默认 30 分钟缓存；未确认模型单价或档位按 $0，非订阅实际账单。"
+        section("费用估算 · USD").toolTip = "官方 API 参考价，Fast / priority 为标准价 ×2，默认 30 分钟缓存；未确认模型单价或档位按 $0，非订阅实际账单。"
         if let tokenUsage {
+            if usageCloudEnabled {
+                let name = usageDevice.flatMap { id in tokenUsage.devices.first { $0.id == id }?.name } ?? (usageDevice == nil ? "全部设备" : "设备暂不可用")
+                let scope = NSMenuItem(title: "统计来源：\(name)", action: nil, keyEquivalent: "")
+                let choices = NSMenu()
+                let all = NSMenuItem(title: "全部设备（去重合并）", action: #selector(selectUsageDevice(_:)), keyEquivalent: "")
+                all.target = self
+                all.state = usageDevice == nil ? .on : .off
+                choices.addItem(all)
+                for device in tokenUsage.devices {
+                    let item = NSMenuItem(title: device.name + (device.id == usageSync.deviceID ? "（本机）" : ""),
+                                          action: #selector(selectUsageDevice(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = device.id
+                    item.state = usageDevice == device.id ? .on : .off
+                    item.toolTip = device.updated.map { "数据更新于 " + $0.formatted(date: .numeric, time: .standard) } ?? "暂无已同步记录"
+                    choices.addItem(item)
+                }
+                scope.toolTip = "按提供记录的设备查看；复制历史可能重叠，全部设备总额只计算一次"
+                scope.submenu = choices
+                menu.addItem(scope)
+                if let message = tokenUsage.syncMessage { info(message) }
+            }
             for period in tokenUsage.periods {
                 if period.name == "当前周额度", period.interval != quota?.weeklyRange() { continue }
                 let item = NSMenuItem(title: "\(period.name) · \(CodexTokenPricing.dollars(period.estimatedUSD))", action: nil, keyEquivalent: "")
+                let amount = CodexTokenPricing.dollars(period.estimatedUSD)
+                let title = NSMutableAttributedString(string: "\(period.name)   \(amount)")
+                title.addAttribute(.font, value: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+                                   range: NSRange(location: title.length - (amount as NSString).length, length: (amount as NSString).length))
+                item.attributedTitle = title
                 let periodMenu = NSMenu()
                 periodMenu.autoenablesItems = false
                 for (group, amounts) in period.models.sorted(by: {
@@ -720,10 +804,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let tokenUsageError { info("⚠ Token 统计：" + tokenUsageError + (tokenUsage == nil ? "" : "（保留上次结果）")) }
         let dateQuery = NSMenuItem(title: "按日期区间查询…", action: #selector(showTokenDateRange), keyEquivalent: "")
         dateQuery.target = self
+        dateQuery.image = NSImage(systemSymbolName: "calendar", accessibilityDescription: nil)
         menu.addItem(dateQuery)
         menu.addItem(.separator())
     if workBuddyEnabled {
-        info("WorkBuddy Proxy " + (workBuddyProxy.isWorkBuddyRunning ? "Running" : "Stop"))
+        section("WorkBuddy  ·  " + (workBuddyProxy.isWorkBuddyRunning ? "运行中" : "已停止"))
         if let state = workBuddyState, let remaining = state.remaining {
             info("当前账号剩余积分：\(remaining.formatted(.number.precision(.fractionLength(0...2)))) \(state.unit)")
         } else {
@@ -752,6 +837,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         importAccount.target = self
         accountsMenu.addItem(importAccount)
         accountsItem.submenu = accountsMenu
+        accountsItem.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         menu.addItem(accountsItem)
         let modelsItem = NSMenuItem(title: "模型列表（\(workBuddyModels.count)）", action: nil, keyEquivalent: "")
         let modelsMenu = NSMenu()
@@ -767,6 +853,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             modelsMenu.addItem(item)
         }
         modelsItem.submenu = modelsMenu
+        modelsItem.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
         menu.addItem(modelsItem)
         let moreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let moreMenu = NSMenu()
@@ -807,7 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let traeSummaries = traeAccounts.summaries
         let preferredID = traeSummaries.first(where: { $0.preferred })?.id
         let balanceText = preferredID.flatMap { traeCreditsByAccount[$0]?.text } ?? "积分未知"
-        info("Trae Proxy " + (workBuddyProxy.isTraeRunning ? "Running" : "Stop"))
+        section("Trae  ·  " + (workBuddyProxy.isTraeRunning ? "运行中" : "已停止"))
         info("当前账号剩余积分：\(balanceText)")
         let traeAccountsItem = NSMenuItem(title: "账号池（\(traeSummaries.count)）", action: nil, keyEquivalent: "")
         let traeAccountsMenu = NSMenu()
@@ -826,6 +913,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         importTrae.target = self
         traeAccountsMenu.addItem(importTrae)
         traeAccountsItem.submenu = traeAccountsMenu
+        traeAccountsItem.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         menu.addItem(traeAccountsItem)
         let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
         let traeModelsMenu = NSMenu()
@@ -841,6 +929,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             traeModelsMenu.addItem(item)
         }
         traeModelsItem.submenu = traeModelsMenu
+        traeModelsItem.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
         menu.addItem(traeModelsItem)
         let traeMoreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
         let traeMoreMenu = NSMenu()
@@ -889,7 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     ocxWorkBuddyConfigItem = nil
     ocxTraeConfigItem = nil
     if openCodexEnabled {
-        ocxStatusItem = info(ocxStatusText)
+        ocxStatusItem = section(ocxStatusText)
         ocxActionItems = [
             ("开启代理", #selector(enableOcx)),
             ("关闭代理", #selector(disableOcx)),
@@ -939,13 +1028,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
                                 keyEquivalent: "")
         update.target = updaterController
+        update.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
         update.isEnabled = updaterController.updater.canCheckForUpdates
         menu.addItem(update)
         let settings = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
+        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(settings)
         let debug = NSMenuItem(title: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
         debug.target = self
+        debug.image = NSImage(systemSymbolName: "ant", accessibilityDescription: nil)
         debug.state = ProxyDebugLog.enabled ? .on : .off
         debug.toolTip = "仅本次运行有效；记录完整请求文本到 ~/Downloads/CodexHelper-Debug，可能包含私人内容"
         menu.addItem(debug)
@@ -957,6 +1049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 Codex Helper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
+        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(quit)
         status.menu = menu
     }
@@ -1210,22 +1303,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 160),
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 252),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "按日期查询用量"
         window.isReleasedWhenClosed = false
         window.center()
         guard let content = window.contentView else { return }
+        content.addSubview(label("查询历史用量", frame: NSRect(x: 24, y: 202, width: 352, height: 27), size: 21, weight: .semibold))
+        content.addSubview(label("选择日期范围，查看费用与 Token 明细。", frame: NSRect(x: 24, y: 178, width: 352, height: 18), size: 12, color: .secondaryLabelColor))
+        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 68, width: 352, height: 98)))
         let now = Date()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         let start = tokenUsageRange?.start ?? quota?.weeklyRange(now: now)?.start ?? calendar.startOfDay(for: now)
         let end = tokenUsageRange?.end.addingTimeInterval(-1) ?? now
         for (index, name) in ["开始日期", "结束日期"].enumerated() {
-            let y = CGFloat(108 - index * 38)
+            let y = CGFloat(128 - index * 40)
             let label = NSTextField(labelWithString: name)
-            label.frame = NSRect(x: 18, y: y, width: 74, height: 22)
-            let picker = NSDatePicker(frame: NSRect(x: 96, y: y - 2, width: 226, height: 26))
+            label.frame = NSRect(x: 40, y: y, width: 74, height: 22)
+            let picker = NSDatePicker(frame: NSRect(x: 132, y: y - 2, width: 226, height: 26))
             picker.datePickerStyle = .textFieldAndStepper
             picker.datePickerElements = .yearMonthDay
             picker.calendar = calendar
@@ -1240,11 +1336,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let hint = NSTextField(labelWithString: "包含开始和结束当天")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
-        hint.frame = NSRect(x: 18, y: 23, width: 145, height: 18)
+        hint.frame = NSRect(x: 24, y: 25, width: 170, height: 18)
         let cancel = NSButton(title: "取消", target: window, action: #selector(NSWindow.performClose(_:)))
-        cancel.frame = NSRect(x: 172, y: 16, width: 70, height: 30)
+        cancel.frame = NSRect(x: 208, y: 19, width: 76, height: 30)
         let query = NSButton(title: "查询", target: self, action: #selector(applyTokenDateRange))
-        query.frame = NSRect(x: 252, y: 16, width: 70, height: 30)
+        query.frame = NSRect(x: 296, y: 19, width: 80, height: 30)
+        cancel.bezelStyle = .rounded
+        cancel.keyEquivalent = "\u{1b}"
+        query.bezelStyle = .rounded
         query.keyEquivalent = "\r"
         [hint, cancel, query].forEach { content.addSubview($0) }
         tokenDateWindow = window
@@ -1270,56 +1369,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         render()
     }
 
+    @objc func selectUsageDevice(_ sender: NSMenuItem) {
+        featureDefaults.set(sender.representedObject as? String, forKey: "usageDevice")
+        tokenUsage = nil
+        refreshTokenUsage()
+        render()
+    }
+
     @objc func showSettings() {
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 218),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 530),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Helper 设置"
         window.isReleasedWhenClosed = false
         window.center()
         guard let content = window.contentView else { return }
+        content.addSubview(symbol("slider.horizontal.3", frame: NSRect(x: 24, y: 461, width: 38, height: 38)))
+        content.addSubview(label("偏好设置", frame: NSRect(x: 76, y: 478, width: 360, height: 29), size: 23, weight: .semibold))
+        content.addSubview(label("按你的工作方式，配置 Helper。", frame: NSRect(x: 76, y: 456, width: 360, height: 18), size: 12, color: .secondaryLabelColor))
+        content.addSubview(label("集成服务", frame: NSRect(x: 26, y: 416, width: 410, height: 20), size: 12, weight: .semibold, color: .secondaryLabelColor))
+        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 148, width: 412, height: 258)))
 
-    let workBuddy = NSButton(checkboxWithTitle: "启用 WorkBuddy 功能", target: self, action: #selector(settingsChanged))
-    workBuddy.state = workBuddyEnabled ? .on : .off
-    workBuddy.frame = NSRect(x: 24, y: 167, width: 342, height: 22)
-    workBuddyEnabledButton = workBuddy
-
-    let trae = NSButton(checkboxWithTitle: "启用 Trae 代理", target: self, action: #selector(settingsChanged))
-    trae.state = traeEnabled ? .on : .off
-    trae.frame = NSRect(x: 24, y: 137, width: 342, height: 22)
-    traeEnabledButton = trae
-
-    let openCodex = NSButton(checkboxWithTitle: "启用 OpenCodex 功能", target: self, action: #selector(settingsChanged))
-    openCodex.state = openCodexEnabled ? .on : .off
-    openCodex.toolTip = "检测 OpenCodex 安装、运行状态并显示相关操作"
-    openCodex.frame = NSRect(x: 24, y: 107, width: 342, height: 22)
-    openCodexEnabledButton = openCodex
-
-        let intervalLabel = NSTextField(labelWithString: "刷新间隔")
-        intervalLabel.frame = NSRect(x: 24, y: 69, width: 76, height: 22)
+        let workBuddy = NSButton(checkboxWithTitle: "启用 WorkBuddy 功能", target: self, action: #selector(settingsChanged))
+        workBuddy.state = workBuddyEnabled ? .on : .off
+        workBuddyEnabledButton = workBuddy
+        let trae = NSButton(checkboxWithTitle: "启用 Trae 代理", target: self, action: #selector(settingsChanged))
+        trae.state = traeEnabled ? .on : .off
+        traeEnabledButton = trae
+        let openCodex = NSButton(checkboxWithTitle: "启用 OpenCodex 功能", target: self, action: #selector(settingsChanged))
+        openCodex.state = openCodexEnabled ? .on : .off
+        openCodex.toolTip = "检测 OpenCodex 安装、运行状态并显示相关操作"
+        openCodexEnabledButton = openCodex
+        let cloud = NSButton(checkboxWithTitle: "通过 iCloud 同步用量", target: self, action: #selector(settingsChanged))
+        cloud.state = usageCloudEnabled ? .on : .off
+        cloud.toolTip = "跨设备同步用量统计，不同步对话内容或账号凭据"
+        usageCloudEnabledButton = cloud
+        let integrations: [(NSButton, String)] = [
+            (workBuddy, "管理账号、积分与本地模型代理"),
+            (trae, "连接 Trae 模型与独立账号池"),
+            (openCodex, "查看运行状态、配置与控制代理"),
+            (cloud, "跨设备汇总统计，不同步对话内容")
+        ]
+        for (index, entry) in integrations.enumerated() {
+            let y = CGFloat(372 - index * 62)
+            entry.0.frame = NSRect(x: 40, y: y, width: 376, height: 22)
+            entry.0.font = .systemFont(ofSize: 13, weight: .medium)
+            content.addSubview(entry.0)
+            content.addSubview(label(entry.1, frame: NSRect(x: 60, y: y - 21, width: 354, height: 17), size: 11, color: .secondaryLabelColor))
+            if index < integrations.count - 1 {
+                let line = NSBox(frame: NSRect(x: 40, y: y - 32, width: 376, height: 1))
+                line.boxType = .separator
+                content.addSubview(line)
+            }
+        }
+        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 70, width: 412, height: 64)))
+        content.addSubview(label("自动刷新", frame: NSRect(x: 40, y: 105, width: 200, height: 18), weight: .medium))
+        content.addSubview(label("每 5–3600 秒更新一次额度", frame: NSRect(x: 40, y: 84, width: 220, height: 17), size: 11, color: .secondaryLabelColor))
         let field = NSTextField(string: String(Int(refreshInterval)))
-        field.frame = NSRect(x: 104, y: 66, width: 72, height: 26)
+        field.frame = NSRect(x: 310, y: 89, width: 70, height: 26)
         field.alignment = .right
+        field.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
         field.formatter = NumberFormatter()
         field.delegate = self
         field.setAccessibilityLabel("刷新间隔秒数")
         intervalField = field
-        let seconds = NSTextField(labelWithString: "秒（5–3600）")
-        seconds.textColor = .secondaryLabelColor
-        seconds.frame = NSRect(x: 184, y: 69, width: 100, height: 22)
-        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings))
-        save.frame = NSRect(x: 296, y: 64, width: 70, height: 30)
+        content.addSubview(field)
+        content.addSubview(label("秒", frame: NSRect(x: 390, y: 92, width: 28, height: 20), color: .secondaryLabelColor))
+        let save = NSButton(title: "保存设置", target: self, action: #selector(saveSettings))
+        save.frame = NSRect(x: 334, y: 20, width: 102, height: 32)
+        save.bezelStyle = .rounded
+        save.keyEquivalent = "\r"
         settingsSaveButton = save
+        content.addSubview(save)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知"
-        let versionLabel = NSTextField(labelWithString: "Codex Helper \(version)（Build \(build)）")
-        versionLabel.textColor = .secondaryLabelColor
-        versionLabel.frame = NSRect(x: 24, y: 20, width: 342, height: 22)
-    [workBuddy, trae, openCodex, intervalLabel, field, seconds, save, versionLabel].forEach { content.addSubview($0) }
+        content.addSubview(label("Codex Helper \(version) · Build \(build)", frame: NSRect(x: 26, y: 26, width: 300, height: 18), size: 11, color: .secondaryLabelColor))
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -1343,6 +1471,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let traeOn = traeEnabledButton?.state == .on
     featureDefaults.set(traeOn, forKey: "traeEnabled")
     featureDefaults.set(openCodexEnabledButton?.state == .on, forKey: "openCodexEnabled")
+    featureDefaults.set(usageCloudEnabledButton?.state == .on, forKey: "usageCloudEnabled")
+    tokenUsage = nil
+    refreshTokenUsage()
     field.stringValue = String(Int(value))
     resetTimer()
     // 两条路由各自按自己的开关与上游可用性生效，互不影响。
@@ -1536,7 +1667,7 @@ if CommandLine.arguments.contains("--self-test") {
     let featureDefaults = UserDefaults(suiteName: "local.codex.helper.self-test.\(UUID().uuidString)")!
     let settingsDelegate = AppDelegate()
     settingsDelegate.featureDefaults = featureDefaults
-    precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.traeEnabled && !settingsDelegate.openCodexEnabled)
+    precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.traeEnabled && !settingsDelegate.openCodexEnabled && !settingsDelegate.usageCloudEnabled)
     precondition(!settingsDelegate.workBuddyRouteAvailable && !settingsDelegate.traeRouteAvailable)
     settingsDelegate.ocxStatusText = "unchecked"
     settingsDelegate.refreshOcxStatus()
@@ -1546,6 +1677,7 @@ if CommandLine.arguments.contains("--self-test") {
                                      forName: UserDefaults.argumentDomain)
     precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
+    try CodexUsageSync.selfTest()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
     precondition(parsed.title == "5h: 100% · 1w: 94%")
@@ -1624,8 +1756,12 @@ if CommandLine.arguments.contains("--self-test") {
     print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
 } else if CommandLine.arguments.contains("--check-token-usage") {
     let weeklyRange = (try? readQuota())?.weeklyRange()
-    let snapshot = try CodexTokenUsageReader().read(weeklyRange: weeklyRange)
+    let cloud = UserDefaults.standard.bool(forKey: "usageCloudEnabled") ? CodexUsageSync() : nil
+    let snapshot = try CodexTokenUsageReader().read(weeklyRange: weeklyRange, sync: cloud,
+        device: UserDefaults.standard.string(forKey: "usageDevice"))
     print("本机 Token 用量 · \(snapshot.timeZone)")
+    if let message = snapshot.syncMessage { print(message) }
+    for device in snapshot.devices { print("设备：\(device.name)；数据更新：\(device.updated?.description ?? "暂无")") }
     if weeklyRange == nil { print("当前周额度：周期暂不可用") }
     for period in snapshot.periods {
         print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens；\(period.interval.start) 至 \(period.interval.end)")

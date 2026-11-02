@@ -3,6 +3,26 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.0</title>
+            <pubDate>Mon, 02 Nov 2026 11:00:08 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.0</link>
+            <sparkle:version>54</sparkle:version>
+            <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.0
+
+- 新增 iCloud 多端合并统计：同一 Apple 账号、同一 Codex／ChatGPT 账号的 Mac，可在设置中开启「通过 iCloud 同步用量」，自动回填本机保留的历史记录。
+- 仅同步用量、模型、档位和设备信息，不包含对话、提示词、工具内容或登录凭据；每台设备独立保存日期文件，跨设备通过事件指纹去重。
+- 「统计来源」支持全部设备或单台设备，并可查看设备数据更新时间；费用统一在查看端按当前规则重算，继续保留标准／Fast 和缓存等明细。
+- 支持离线缓存、重连补传、损坏文件保留上次有效数据；无法确认的冲突费用按 $0，免费审查模型继续排除。
+- 同步改进菜单、额度卡片、设置及日期查询界面，增加分组、系统图标和浅色／深色适配。
+
+同步默认关闭，需在每台 Mac 的设置中开启。iCloud 传输存在延迟，复制历史的单设备来源视图可能重叠，全设备总额会去重。支持 Apple Silicon（M 系列）Mac，macOS 15 或以上；费用仍为本机记录推算的 API 参考金额。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.0/Codex-Helper-Swift-1.9.0.zip" length="2348920" type="application/octet-stream" sparkle:edSignature="KVGo+n4TCoc9VXsz5TuSqzuD+IB7CcMEw6xMVb8tTkZn38bZbREyNmu+Cvz3XFY8ItjSwbIacr12jIq8AcMiBw=="/>
+        </item>
+        <item>
             <title>1.8.14</title>
             <pubDate>Mon, 02 Nov 2026 10:00:41 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.8.14</link>

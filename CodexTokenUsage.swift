@@ -1,6 +1,6 @@
 import Foundation
 
-struct CodexTokenAmounts: Decodable, Equatable, Hashable {
+struct CodexTokenAmounts: Codable, Equatable, Hashable {
     var input: Int64 = 0
     var cached: Int64? = 0
     var cacheWrite: Int64? = 0
@@ -152,6 +152,8 @@ struct CodexTokenUsageSnapshot {
     let timeZone: String
     let unreadableFiles: Int
     let skippedEvents: Int
+    var devices: [CodexUsageDevice] = []
+    var syncMessage: String?
 }
 
 enum CodexTokenUsageError: LocalizedError {
@@ -202,6 +204,7 @@ final class CodexTokenUsageReader {
         let date: Date
         let group: CodexTokenUsageGroup
         let costs: CodexTokenCosts
+        let record: CodexUsageRecord
     }
     private struct FileState {
         var offset: UInt64 = 0
@@ -267,11 +270,14 @@ final class CodexTokenUsageReader {
                                                      cumulative: info.total_token_usage, amounts: amounts),
                                   date: date, group: CodexTokenUsageGroup(model: state.model, tier: CodexTokenTier(state.serviceTier)),
                                   costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts,
-                                                                    serviceTier: state.serviceTier)))
+                                                                    serviceTier: state.serviceTier),
+                                  record: CodexUsageRecord(timestamp: record.timestamp, occurredAt: date.timeIntervalSince1970,
+                                      model: state.model, serviceTier: state.serviceTier, cumulative: info.total_token_usage, amounts: amounts)))
     }
 
     func read(now: Date = Date(), timeZone: TimeZone = .current,
-              weeklyRange: DateInterval? = nil, range: DateInterval? = nil) throws -> CodexTokenUsageSnapshot {
+              weeklyRange: DateInterval? = nil, range: DateInterval? = nil,
+              sync: CodexUsageSync? = nil, device: String? = nil) throws -> CodexTokenUsageSnapshot {
         if let range, range.duration == 0 { throw CodexTokenUsageError.invalidRange }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
@@ -290,7 +296,8 @@ final class CodexTokenUsageReader {
             periods.append(CodexTokenUsagePeriod(
                 name: formatter.string(from: range.start) + "–" + formatter.string(from: lastDay), interval: range))
         }
-        let since = periods.map { $0.interval.start }.min()!
+        let querySince = periods.map { $0.interval.start }.min()!
+        let since = sync == nil ? querySince : Date.distantPast
         if let retainedSince {
             if since < retainedSince { files.removeAll() }
             else if since > retainedSince {
@@ -350,25 +357,36 @@ final class CodexTokenUsageReader {
                 } catch { unreadable += 1 }
             }
         }
-        guard foundDirectory else { throw CodexTokenUsageError.missingSessions }
+        guard foundDirectory || sync != nil else { throw CodexTokenUsageError.missingSessions }
         files = files.filter { liveFiles.contains($0.key) }
+        let local = files.values.flatMap(\.events)
+        let shared = sync?.exchange(local: local.map(\.record), selectedDevice: device, now: now)
+        let events = shared.map { result in
+            result.records.filter { $0.occurredAt >= querySince.timeIntervalSince1970 && $0.occurredAt <= now.timeIntervalSince1970 }.map { record in
+                Event(identity: Identity(timestamp: record.timestamp, cumulative: record.cumulative, amounts: record.amounts),
+                    date: Date(timeIntervalSince1970: record.occurredAt),
+                    group: CodexTokenUsageGroup(model: record.model, tier: CodexTokenTier(record.serviceTier)),
+                    costs: CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts, serviceTier: record.serviceTier), record: record)
+            }
+        } ?? local
         var seen = Set<Identity>()
-        for state in files.values {
-            for event in state.events where event.date >= since && event.date <= now {
-                // 分叉历史或重复副本保留事件时间和累计值，跨文件只统计一次。
-                guard seen.insert(event.identity).inserted else { continue }
-                for index in periods.indices where event.date >= periods[index].interval.start
-                    && event.date < periods[index].interval.end {
-                    periods[index].models[event.group] = try (periods[index].models[event.group] ?? CodexTokenAmounts())
-                        .adding(event.identity.amounts)
-                    periods[index].costs[event.group] = (periods[index].costs[event.group] ?? CodexTokenCosts())
-                        .adding(event.costs)
-                }
+        for event in events where event.date >= querySince && event.date <= now {
+            // 分叉历史或重复副本保留事件时间和累计值，跨文件只统计一次。
+            guard seen.insert(event.identity).inserted else { continue }
+            for index in periods.indices where event.date >= periods[index].interval.start
+                && event.date < periods[index].interval.end {
+                periods[index].models[event.group] = try (periods[index].models[event.group] ?? CodexTokenAmounts())
+                    .adding(event.identity.amounts)
+                periods[index].costs[event.group] = (periods[index].costs[event.group] ?? CodexTokenCosts())
+                    .adding(event.costs)
             }
         }
         for period in periods { _ = try period.total }
-        return CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: timeZone.identifier,
+        var snapshot = CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: timeZone.identifier,
                                        unreadableFiles: unreadable, skippedEvents: files.values.reduce(0) { $0 + $1.skipped })
+        snapshot.devices = shared?.devices ?? []
+        snapshot.syncMessage = shared?.message
+        return snapshot
     }
 }
 

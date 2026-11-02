@@ -14,7 +14,7 @@
 
 - 菜单栏采用紧凑的上下两行：`5h: 100%`、`1w: 94%`，表示 5 小时窗口剩余 100%、1 周窗口剩余 94%。窗口长度以接口实际返回为准。 只有一个额度窗口时，标签和百分比各占一行，例如仅有周额度时，上行为 `1w`、下行为 `100%`。
 - 点击菜单栏查看剩余进度条、账户套餐、各窗口重置时间（Mac 本地时区）。
-- 「费用估算（USD）」一级显示今日和当前周额度周期内累计的美元金额，二级按「模型 · 标准 / Fast / 未知」分别显示金额，同一模型不同档位的 token 分项分别累计，三级显示 token 总量及输入合计、未缓存输入、缓存命中、缓存写入、输出和其中推理分项，每行同时显示对应美元金额。分项金额逐次请求计算后汇总；缓存已含在输入金额中，推理已含在输出金额中，不重复相加。金额显示四舍五入到分；缺失 token 分类显示「未记录」。主菜单额度卡宽度为 268 点。周额度周期按接口返回的周重置时间减去 7 天至重置时刻计算，不按自然周或自然月归集；菜单提示显示周期起止时间，未取得有效周重置时间时显示「周期暂不可用」。
+- 「费用估算（USD）」一级显示今日和当前周额度周期内累计的美元金额，二级按「模型 · 标准 / Fast / 未知」分别显示金额，同一模型不同档位的 token 分项分别累计，三级显示 token 总量及输入合计、未缓存输入、缓存命中、缓存写入、输出和其中推理分项，每行同时显示对应美元金额。分项金额逐次请求计算后汇总；缓存已含在输入金额中，推理已含在输出金额中，不重复相加。金额显示四舍五入到分；缺失 token 分类显示「未记录」。主菜单宽度为 320 点，额度以圆角卡片展示，突出剩余百分比；菜单使用分组标题和系统图标，并跟随系统浅色 / 深色外观。周额度周期按接口返回的周重置时间减去 7 天至重置时刻计算，不按自然周或自然月归集；菜单提示显示周期起止时间，未取得有效周重置时间时显示「周期暂不可用」。
 - 「按日期区间查询…」可选择开始和结束日期（按本机时区，包含首尾当天），查询结果作为额外一行显示在今日、当前周额度下方，沿用「区间金额 → 模型金额 → token 分项」布局。可查询保留下来的历史会话和归档；范围变更在后台重算，查询范围仅本次运行有效。
 - 金额按 [OpenAI 官方 API 单价](https://developers.openai.com/api/docs/pricing)估算（2026-11-01 核对），缓存写入采用默认 30 分钟价格；超过 272K 输入的请求按长上下文价格逐次计算后汇总，避免把日/月累计输入当成长上下文。读取日志中「已应用设置」事件的 `thread_settings.service_tier`：`default` / `standard` 按标准价，`fast` / `priority` 按标准价 ×2，分别应用于输入、缓存、输出和其中推理费用，原始 token 数量不变；按模型和档位分别汇总，`fast` 与 `priority` 合并为 Fast，标准、Fast、未知各占一行，一级金额为各组之和。
 - 当前确认 GPT-6 Astra、GPT-6.1 Sol / Terra、GPT-6 Sol / Luna、GPT-5.6 Sol / Terra / Luna；未确认单价的模型（包括第三方模型）、未记录或不支持的档位，以及缺少计价所需 token 分项的记录，统一按 $0 计入。历史档位以日志事件为准，不用当前配置推测过去。金额是 API 参考价，不按套餐额度的 2.5 倍计算，未计地区附加费和工具费用；日志未记录的服务端回退档位、其他缓存寿命无法还原，不代表订阅实际账单。
@@ -74,6 +74,21 @@ Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Appli
 
 若希望开机自动运行，可先将应用移到固定目录，再在「系统设置 → 通用 → 登录项」中添加该应用。
 
-源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
+源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
 
 参考：[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)。
+
+界面检查：运行 `sh Tests/check-ui.sh`，以隔离设置验证控件和文本边界，并生成浅色 / 深色的设置、日期查询和正常 / 低额度 / 过期额度截图到 `.build/ui-check/`；不启动代理、不保存用户设置。
+
+
+## iCloud 多端合并统计
+
+在每台使用同一 Apple 账号、同一 Codex／ChatGPT 账号的 Mac 上，打开「设置… → 通过 iCloud 同步用量」并保存。此开关默认关闭；首次开启会回填本机仍保留的历史记录。应用自动使用 iCloud Drive 的 `Codex Helper/Usage/v1` 目录，无需同步整个 `.codex` 目录或部署服务。
+
+- 每台设备只写自己的日期文件，每分钟检查和交换一次；包含稳定事件指纹、时间、模型、档位、token 分项和设备名，不包含对话、提示词、工具内容、登录密钥或 Token。
+- 「统计来源」可选全部设备或单台设备，鼠标停留在设备项可查看数据更新时间。全部设备按事件指纹去重；复制、分叉历史可能同时出现在多个设备的来源视图，因此各设备小计不能直接相加。设备来源表示哪台机器提供了记录，不能用于还原复制历史的实际执行地点。
+- 同步的是每次请求的 token 分项，费用在查看端按当前版本的统一规则重新估算；继续区分标准／Fast、缓存命中／写入等。重复事件元数据不全时优先采用已确认信息，模型或已知档位冲突时无法确认的费用按 $0，并显示提示。
+- 本机缓存保存在 `~/Library/Application Support/Codex Helper/UsageCache/v1`。断网、文件尚未下载或云端文件损坏时保留上次有效数据；未上传的本机用量稍后自动重试。系统 iCloud 同步有延迟，设备数据更新时间不等于其他设备已经收到全部记录。
+- 关闭开关会恢复仅统计本机原始记录，停止后续收发；不会删除此前已同步的文件或缓存。历史日志缺失、没有稳定事件信息的记录无法凭空补齐。当前版本不区分同一机器历史上的不同 Codex 账号，请勿将不同 Codex 账号的记录混入同一 iCloud 统计目录。
+
+`sh Tests/check-ui.sh` 可检查浅色／深色界面、设置控件与日期查询。内置同步自检覆盖双设备去重、同设备并发写入、离线重启与补传、损坏文件回退、元数据冲突、历史回填及导出字段白名单。测试需要正常 macOS 文件协调服务；受限的自动化沙箱可能需放行该服务。
