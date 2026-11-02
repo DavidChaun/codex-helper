@@ -74,7 +74,7 @@ Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Appli
 
 若希望开机自动运行，可先将应用移到固定目录，再在「系统设置 → 通用 → 登录项」中添加该应用。
 
-源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
+源码按 `CodexQuotaBar.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`CodexResponseTiming.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
 
 参考：[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)。
 
@@ -92,3 +92,11 @@ Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Appli
 - 关闭开关会恢复仅统计本机原始记录，停止后续收发；不会删除此前已同步的文件或缓存。历史日志缺失、没有稳定事件信息的记录无法凭空补齐。当前版本不区分同一机器历史上的不同 Codex 账号，请勿将不同 Codex 账号的记录混入同一 iCloud 统计目录。
 
 `sh Tests/check-ui.sh` 可检查浅色／深色界面、设置控件与日期查询。内置同步自检覆盖双设备去重、同设备并发写入、离线重启与补传、损坏文件回退、元数据冲突、历史回填及导出字段白名单。测试需要正常 macOS 文件协调服务；受限的自动化沙箱可能需放行该服务。
+
+## 模型输出效率
+
+模型费用旁显示 `tok/s avg`，标准／Fast 分开，随今日、当前周额度、日期区间和设备来源一起筛选。明细显示有效测速样本数／总请求数；平均值为有效样本的输出 token（含推理）总量除以这些样本的响应耗时总和，不对各次速度直接取算术平均。
+
+耗时从 Codex 原生 `logs_*.sqlite` 的请求起始日志，到会话记录中该次模型的最后一次输出，包含首字等待，排除模型输出结束后等待工具执行的时间。只读本地数据库，通过线程、轮次、时间及原生用量记录配对；无数据库、日志被清理、用量不匹配或缺失可靠时序时，该请求不参与测速，没有有效样本显示 `—`。这是客户端响应效率，包含网络和等待时间；不等同于服务端纯解码速度，也不依赖 OpenCodex。
+
+iCloud 仅增加可选的响应秒数字段，事件指纹不变，重复记录仍只算一次；旧版文件和没有测速信息的设备可继续合并。其他设备升级后可贡献测速样本；不额外同步数据库、响应标识或对话内容。

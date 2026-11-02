@@ -790,10 +790,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 }) {
                     let costs = period.costs[group] ?? CodexTokenCosts()
                     let price = CodexTokenPricing.dollars(costs.total)
-                    let modelItem = NSMenuItem(title: "\(group.title) · \(price)", action: nil, keyEquivalent: "")
+                    let performance = period.performance[group] ?? CodexOutputPerformance()
+                    let modelItem = NSMenuItem(title: "\(group.title) · \(price) · \(performance.label)", action: nil, keyEquivalent: "")
+                    modelItem.toolTip = CodexOutputPerformance.explanation
                     let details = NSMenu()
                     details.autoenablesItems = false
-                    for text in costs.rows(amounts: amounts) + ["缓存已计入输入", "推理已计入输出"] {
+                    for text in [performance.label, performance.sampleLabel] + costs.rows(amounts: amounts) + ["缓存已计入输入", "推理已计入输出"] {
                         let row = NSMenuItem(title: text, action: nil, keyEquivalent: "")
                         row.isEnabled = false
                         details.addItem(row)
@@ -1688,6 +1690,7 @@ if CommandLine.arguments.contains("--self-test") {
                                      forName: UserDefaults.argumentDomain)
     precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
+    try CodexResponseTimingReader.selfTest()
     try CodexUsageSync.selfTest()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
@@ -1778,7 +1781,8 @@ if CommandLine.arguments.contains("--self-test") {
         print("\(period.name)：\(CodexTokenPricing.dollars(period.estimatedUSD))；\(try period.total.total) tokens；\(period.interval.start) 至 \(period.interval.end)")
         for (group, amounts) in period.models.sorted(by: { $0.key.title < $1.key.title }) {
             let costs = period.costs[group] ?? CodexTokenCosts()
-            print("  \(group.title)：\(CodexTokenPricing.dollars(costs.total))；" + costs.rows(amounts: amounts).joined(separator: "；"))
+            let performance = period.performance[group] ?? CodexOutputPerformance()
+            print("  \(group.title)：\(CodexTokenPricing.dollars(costs.total))；\(performance.label)；\(performance.sampleLabel)；" + costs.rows(amounts: amounts).joined(separator: "；"))
         }
     }
     print("读取失败：\(snapshot.unreadableFiles)；跳过异常或缺失用量：\(snapshot.skippedEvents)")

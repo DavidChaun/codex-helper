@@ -9,6 +9,7 @@ struct CodexUsageRecord: Codable, Equatable {
     let serviceTier: String?
     let cumulative: CodexTokenAmounts?
     let amounts: CodexTokenAmounts
+    var responseSeconds: Double?
 
     private struct Identity: Encodable {
         let timestamp: String
@@ -16,13 +17,14 @@ struct CodexUsageRecord: Codable, Equatable {
         let amounts: CodexTokenAmounts
     }
     init(timestamp: String, occurredAt: Double, model: String, serviceTier: String?,
-         cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts, id: String? = nil) {
+         cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts, id: String? = nil, responseSeconds: Double? = nil) {
         self.timestamp = timestamp
         self.occurredAt = occurredAt
         self.model = model
         self.serviceTier = serviceTier
         self.cumulative = cumulative
         self.amounts = amounts
+        self.responseSeconds = responseSeconds
         self.id = id ?? Self.fingerprint(timestamp: timestamp, cumulative: cumulative, amounts: amounts)
     }
     static func fingerprint(timestamp: String, cumulative: CodexTokenAmounts?, amounts: CodexTokenAmounts) -> String {
@@ -36,6 +38,7 @@ struct CodexUsageRecord: Codable, Equatable {
         occurredAt.isFinite && amounts.valid && amounts.total > 0
             && !model.isEmpty && model.utf8.count <= 200 && timestamp.utf8.count <= 64
             && (serviceTier?.utf8.count ?? 0) <= 64
+            && (responseSeconds.map { $0.isFinite && $0 > 0 } ?? true)
     }
 }
 
@@ -96,6 +99,23 @@ extension CodexUsageSync {
         let invalid = try JSONSerialization.data(withJSONObject: object)
         do { _ = try a.decode(invalid); preconditionFailure("Reject path traversal in peer files") }
         catch is CocoaError {}
+        var timedFirst = first
+        timedFirst.responseSeconds = 4
+        precondition(timedFirst.id == first.id)
+        let legacyRecord = try JSONEncoder().encode(first)
+        let decodedLegacy = try JSONDecoder().decode(CodexUsageRecord.self, from: legacyRecord)
+        precondition(decodedLegacy.responseSeconds == nil)
+        let enriched = b.exchange(local: [timedFirst], now: now.addingTimeInterval(366))
+        precondition(enriched.records.first { $0.id == first.id }?.responseSeconds == 4)
+        let peerTiming = restarted.exchange(local: [first], now: now.addingTimeInterval(367))
+        precondition(peerTiming.records.first { $0.id == first.id }?.responseSeconds == 4,
+                     "An older client copy must not erase timing or double-count the event")
+        let timedSnapshot = try reader.read(now: now.addingTimeInterval(368), timeZone: TimeZone(secondsFromGMT: 0)!, sync: restarted)
+        let timedStats = timedSnapshot.periods[0].performance[CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .standard)]!
+        precondition(timedStats.samples == 1 && timedStats.requests == 3 && timedStats.average == 2500)
+        var invalidTiming = first
+        invalidTiming.responseSeconds = -.infinity
+        precondition(!invalidTiming.valid)
         object = try JSONSerialization.jsonObject(with: goodData) as! [String: Any]
         var records = object["records"] as! [[String: Any]]
         var amounts = records[0]["amounts"] as! [String: Any]
@@ -135,7 +155,7 @@ extension CodexUsageSync {
         let history = try historyReader.read(now: now.addingTimeInterval(488), timeZone: TimeZone(secondsFromGMT: 0)!, range: range, sync: historySync)
         let historicalTokens = try history.periods[1].total.total
         precondition(historicalTokens == 105)
-        let allowed: Set<String> = ["id", "timestamp", "occurredAt", "model", "serviceTier", "cumulative", "amounts"]
+        let allowed: Set<String> = ["id", "timestamp", "occurredAt", "model", "serviceTier", "cumulative", "amounts", "responseSeconds"]
         for case let url as URL in FileManager.default.enumerator(at: cloud, includingPropertiesForKeys: nil)! where url.pathExtension == "json" {
             let exported = try Data(contentsOf: url)
             let text = String(decoding: exported, as: UTF8.self)
@@ -285,7 +305,8 @@ final class CodexUsageSync {
             let tier: String? = conflict || tierConflict ? "conflict" : tiers.count == 1 ? (tiers.first == .fast ? "fast" : "default") : nil
             if conflict || tierConflict { warnings.insert("重复记录的模型或档位冲突，无法确认的费用按 $0") }
             return CodexUsageRecord(timestamp: first.timestamp, occurredAt: first.occurredAt, model: model,
-                                    serviceTier: tier, cumulative: first.cumulative, amounts: first.amounts, id: first.id)
+                                    serviceTier: tier, cumulative: first.cumulative, amounts: first.amounts, id: first.id,
+                                    responseSeconds: copies.compactMap(\.responseSeconds).max())
         }.sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
     }
 

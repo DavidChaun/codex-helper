@@ -140,9 +140,36 @@ struct CodexTokenUsagePeriod {
     let interval: DateInterval
     var models: [CodexTokenUsageGroup: CodexTokenAmounts] = [:]
     var costs: [CodexTokenUsageGroup: CodexTokenCosts] = [:]
+    var performance: [CodexTokenUsageGroup: CodexOutputPerformance] = [:]
     var estimatedUSD: Decimal { costs.values.reduce(0) { $0 + $1.total } }
     var total: CodexTokenAmounts {
         get throws { try models.values.reduce(CodexTokenAmounts()) { try $0.adding($1) } }
+    }
+}
+
+struct CodexOutputPerformance {
+    var output: Double = 0
+    var seconds: Double = 0
+    var samples: Int = 0
+    var requests: Int = 0
+    var average: Double? {
+        guard samples > 0, seconds > 0 else { return nil }
+        let value = output / seconds
+        return value.isFinite ? value : nil
+    }
+    var label: String {
+        "tok/s avg: " + (average.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—")
+    }
+    var sampleLabel: String { "测速样本：\(samples) / \(requests) 次请求" }
+    static let explanation = "有效样本输出 token（含推理）总量 ÷ 请求耗时总和。耗时从请求开始至最后一次模型输出，包含首字等待，不包含随后工具执行；缺少可靠时序的请求不参与。"
+
+    mutating func include(_ record: CodexUsageRecord) {
+        requests += 1
+        guard record.amounts.output > 0, let duration = record.responseSeconds, duration.isFinite, duration > 0 else { return }
+        guard (seconds + duration).isFinite else { return }
+        output += Double(record.amounts.output)
+        seconds += duration
+        samples += 1
     }
 }
 
@@ -185,6 +212,10 @@ final class CodexTokenUsageReader {
             let model: String?
             let info: Info?
             let thread_settings: ThreadSettings?
+            let thread_id: String?
+            let turn_id: String?
+            let usage: CodexTokenAmounts?
+            let role: String?
         }
         struct ThreadSettings: Decodable {
             let service_tier: String?
@@ -204,7 +235,8 @@ final class CodexTokenUsageReader {
         let date: Date
         let group: CodexTokenUsageGroup
         let costs: CodexTokenCosts
-        let record: CodexUsageRecord
+        var record: CodexUsageRecord
+        var responseSpan: CodexResponseSpan? = nil
     }
     private struct FileState {
         var offset: UInt64 = 0
@@ -215,9 +247,14 @@ final class CodexTokenUsageReader {
         var previous: CodexTokenAmounts?
         var events: [Event] = []
         var skipped = 0
+        var firstOutput: Date?
+        var lastOutput: Date?
+        var previousUsage: Date?
+        var pendingUsage: (amounts: CodexTokenAmounts, date: Date, span: CodexResponseSpan?)?
     }
 
     private let root: URL
+    private let responseTiming: CodexResponseTimingReader
     private var files: [String: FileState] = [:]
     private var retainedSince: Date?
     private let decoder = JSONDecoder()
@@ -230,22 +267,55 @@ final class CodexTokenUsageReader {
     private let usageMarker = Data("\"token_count\"".utf8)
     private let contextMarker = Data("\"turn_context\"".utf8)
     private let settingsMarker = Data("\"thread_settings_applied\"".utf8)
+    private let nativeUsageMarker = Data("\"token_usage_record\"".utf8)
+    private let outputMarker = Data("\"response_item\"".utf8)
 
     init(root: URL = ProcessInfo.processInfo.environment["CODEX_HOME"].map {
         URL(fileURLWithPath: $0, isDirectory: true)
     } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")) {
         self.root = root
+        responseTiming = CodexResponseTimingReader(root: root)
     }
 
     private func consume(_ line: Data, state: inout FileState, since: Date) {
         guard line.range(of: usageMarker) != nil || line.range(of: contextMarker) != nil
-                || line.range(of: settingsMarker) != nil else { return }
+                || line.range(of: settingsMarker) != nil || line.range(of: nativeUsageMarker) != nil
+                || line.range(of: outputMarker) != nil else { return }
         guard let record = try? decoder.decode(Record.self, from: line) else {
             state.skipped += 1
             return
         }
         if record.type == "turn_context" {
             if let model = record.payload.model, !model.isEmpty { state.model = model }
+            state.firstOutput = nil
+            state.lastOutput = nil
+            state.pendingUsage = nil
+            return
+        }
+        if record.type == "response_item" {
+            let type = record.payload.type ?? ""
+            guard ["reasoning", "function_call", "custom_tool_call"].contains(type)
+                    || (type == "message" && record.payload.role == "assistant"),
+                  let date = fractionalISO.date(from: record.timestamp) ?? iso.date(from: record.timestamp) else { return }
+            state.firstOutput = min(state.firstOutput ?? date, date)
+            state.lastOutput = max(state.lastOutput ?? date, date)
+            return
+        }
+        if record.type == "token_usage_record" {
+            defer { state.firstOutput = nil; state.lastOutput = nil }
+            guard let amounts = record.payload.usage, amounts.valid,
+                  let date = fractionalISO.date(from: record.timestamp) ?? iso.date(from: record.timestamp) else {
+                state.pendingUsage = nil
+                return
+            }
+            var span: CodexResponseSpan?
+            if let thread = record.payload.thread_id, let turn = record.payload.turn_id,
+               let first = state.firstOutput, let last = state.lastOutput, last <= date {
+                span = CodexResponseSpan(threadID: thread, turnID: turn, firstOutput: first,
+                                        lastOutput: last, previousUsage: state.previousUsage)
+            }
+            state.pendingUsage = (amounts, date, span)
+            state.previousUsage = date
             return
         }
         if record.type == "event_msg", record.payload.type == "thread_settings_applied" {
@@ -254,6 +324,7 @@ final class CodexTokenUsageReader {
         }
         guard record.type == "event_msg", record.payload.type == "token_count",
               let info = record.payload.info else { return }
+        defer { state.pendingUsage = nil; state.firstOutput = nil; state.lastOutput = nil }
         let previous = state.previous
         state.previous = info.total_token_usage
         guard state.model != "codex-auto-review" else { return }
@@ -266,13 +337,17 @@ final class CodexTokenUsageReader {
             return
         }
         guard date >= since, amounts.total > 0 else { return }
+        let span = state.pendingUsage.flatMap { pending in
+            pending.amounts == amounts && date >= pending.date && date.timeIntervalSince(pending.date) < 5 ? pending.span : nil
+        }
         state.events.append(Event(identity: Identity(timestamp: record.timestamp,
                                                      cumulative: info.total_token_usage, amounts: amounts),
                                   date: date, group: CodexTokenUsageGroup(model: state.model, tier: CodexTokenTier(state.serviceTier)),
                                   costs: CodexTokenPricing.breakdown(model: state.model, amounts: amounts,
                                                                     serviceTier: state.serviceTier),
                                   record: CodexUsageRecord(timestamp: record.timestamp, occurredAt: date.timeIntervalSince1970,
-                                      model: state.model, serviceTier: state.serviceTier, cumulative: info.total_token_usage, amounts: amounts)))
+                                      model: state.model, serviceTier: state.serviceTier, cumulative: info.total_token_usage, amounts: amounts),
+                                  responseSpan: span))
     }
 
     func read(now: Date = Date(), timeZone: TimeZone = .current,
@@ -297,6 +372,7 @@ final class CodexTokenUsageReader {
                 name: formatter.string(from: range.start) + "–" + formatter.string(from: lastDay), interval: range))
         }
         let querySince = periods.map { $0.interval.start }.min()!
+        responseTiming.refresh()
         let since = sync == nil ? querySince : Date.distantPast
         if let retainedSince {
             if since < retainedSince { files.removeAll() }
@@ -359,7 +435,11 @@ final class CodexTokenUsageReader {
         }
         guard foundDirectory || sync != nil else { throw CodexTokenUsageError.missingSessions }
         files = files.filter { liveFiles.contains($0.key) }
-        let local = files.values.flatMap(\.events)
+        let local = files.values.flatMap(\.events).map { event in
+            var event = event
+            if let span = event.responseSpan { event.record.responseSeconds = responseTiming.seconds(for: span) }
+            return event
+        }
         let shared = sync?.exchange(local: local.map(\.record), selectedDevice: device, now: now)
         let events = shared.map { result in
             result.records.filter { $0.occurredAt >= querySince.timeIntervalSince1970 && $0.occurredAt <= now.timeIntervalSince1970 }.map { record in
@@ -369,6 +449,9 @@ final class CodexTokenUsageReader {
                     costs: CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts, serviceTier: record.serviceTier), record: record)
             }
         } ?? local
+        let durations = Dictionary(events.compactMap { event in
+            event.record.responseSeconds.map { (event.identity, $0) }
+        }, uniquingKeysWith: max)
         var seen = Set<Identity>()
         for event in events where event.date >= querySince && event.date <= now {
             // 分叉历史或重复副本保留事件时间和累计值，跨文件只统计一次。
@@ -379,6 +462,9 @@ final class CodexTokenUsageReader {
                     .adding(event.identity.amounts)
                 periods[index].costs[event.group] = (periods[index].costs[event.group] ?? CodexTokenCosts())
                     .adding(event.costs)
+                var measured = event.record
+                measured.responseSeconds = durations[event.identity]
+                periods[index].performance[event.group, default: CodexOutputPerformance()].include(measured)
             }
         }
         for period in periods { _ = try period.total }
