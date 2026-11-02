@@ -3,6 +3,25 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.8.14</title>
+            <pubDate>Mon, 02 Nov 2026 10:00:41 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.8.14</link>
+            <sparkle:version>53</sparkle:version>
+            <sparkle:shortVersionString>1.8.14</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.8.14
+
+- 设置中新增「启用 OpenCodex 功能」开关；关闭后不检测 OpenCodex 安装或运行状态，并隐藏安装提示、状态及相关操作。
+- WorkBuddy、Trae、OpenCodex 三个功能在未保存过设置时默认均不勾选；已有明确保存的启用选择继续保留。
+- 仅对已启用的可选功能显示缺少组件的安装提示，Codex 额度查询和本机费用统计可独立使用。
+- 关闭 OpenCodex 后忽略尚未完成的状态检测结果，阻止继续触发新的 OpenCodex 操作。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。沿用现有 Sparkle 签名和自动更新通道。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.8.14/Codex-Helper-Swift-1.8.14.zip" length="2253775" type="application/octet-stream" sparkle:edSignature="Y6PqLBhpmk4cFagJcRU8XNE56QEpqZJZ3k4P9TCGBxjl4Pn5BtflbqSK1dUz4Apv/to8wiw0+7c6BjuQ9EkUDA=="/>
+        </item>
+        <item>
             <title>1.8.13</title>
             <pubDate>Sun, 01 Nov 2026 23:49:12 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.8.13</link>

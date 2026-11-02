@@ -8,7 +8,7 @@
 
 本次提供的应用支持 **Apple Silicon（M 系列）Mac，macOS 15 或以上**。接收者需要自行安装 Codex CLI，并用自己的 ChatGPT 账户登录；压缩包不包含发送者的账户凭据。建议先把应用拖入「应用程序」，再双击启动。
 
-应用启动后会分别检测 Codex CLI、OpenCodex 和 WorkBuddy CLI。缺少组件时，点击菜单顶部提示即可复制安装命令；OpenCodex 的命令会先通过 Homebrew 安装 Node.js。WorkBuddy 无命令行安装器，点击提示会复制官网地址，安装后需登录。
+应用启动后检测 Codex CLI；仅在设置中启用对应功能后，才检测 OpenCodex 或 WorkBuddy CLI。启用功能所需组件缺失时，点击菜单顶部提示即可复制安装命令；OpenCodex 的命令会先通过 Homebrew 安装 Node.js。WorkBuddy 无命令行安装器，点击提示会复制官网地址，安装后需登录。
 
 应用尚未经过 Apple 开发者签名及公证。若首次打开受到阻止，在确认文件来自可信来源后，可按 [Apple 官方说明](https://support.apple.com/zh-cn/102445) 前往「系统设置 → 隐私与安全性 → 仍要打开」。
 
@@ -19,11 +19,11 @@
 - 金额按 [OpenAI 官方 API 单价](https://developers.openai.com/api/docs/pricing)估算（2026-11-01 核对），缓存写入采用默认 30 分钟价格；超过 272K 输入的请求按长上下文价格逐次计算后汇总，避免把日/月累计输入当成长上下文。读取日志中「已应用设置」事件的 `thread_settings.service_tier`：`default` / `standard` 按标准价，`fast` / `priority` 按标准价 ×2，分别应用于输入、缓存、输出和其中推理费用，原始 token 数量不变；按模型和档位分别汇总，`fast` 与 `priority` 合并为 Fast，标准、Fast、未知各占一行，一级金额为各组之和。
 - 当前确认 GPT-6 Astra、GPT-6.1 Sol / Terra、GPT-6 Sol / Luna、GPT-5.6 Sol / Terra / Luna；未确认单价的模型（包括第三方模型）、未记录或不支持的档位，以及缺少计价所需 token 分项的记录，统一按 $0 计入。历史档位以日志事件为准，不用当前配置推测过去。金额是 API 参考价，不按套餐额度的 2.5 倍计算，未计地区附加费和工具费用；日志未记录的服务端回退档位、其他缓存寿命无法还原，不代表订阅实际账单。
 - Token 统计只读 `$CODEX_HOME/sessions` 与 `archived_sessions`（默认 `~/.codex`），不依赖 OpenCodex，也不上传会话内容；按每次请求的事件时间归入对应统计区间，日期和周期起止时间以本机时区展示。`codex-auto-review` 完全排除，不显示条目，也不计入任何区间的 token、缓存分项或费用；未确认单价的其他模型仍保留并按 $0 估算。模型标签不能用于还原代理背后的真实模型，也不是官方计费账单。清理、缺失或未写入本机的历史不会被统计；无法读取的文件及缺失/异常用量会在菜单提示。读取在后台执行，已读文件只处理追加内容。
-- 默认每 10 秒同时刷新 Codex 额度和 WorkBuddy 积分。菜单中的「设置…」可填写 5–3600 秒，并可用「启用 WorkBuddy 功能」「启用 Trae 代理」两个开关分别启停两条代理路由（均默认开启）；保存后会提示成功并将按钮置灰，修改设置后按钮重新启用。关闭「启用 Trae 代理」会立即停用 Trae 路由、隐藏 Trae 菜单区块并清空其临时状态，WorkBuddy 不受影响。唤醒 Mac 后自动刷新；上次请求尚未结束时不会重复发起。
+- 默认每 10 秒刷新 Codex 额度，WorkBuddy、Trae 仅在启用后刷新。菜单中的「设置…」可填写 5–3600 秒，并提供「启用 WorkBuddy 功能」「启用 Trae 代理」「启用 OpenCodex 功能」三个开关，未保存过设置时默认均不勾选，已有明确保存的选择继续保留。OpenCodex 不勾选时不检测安装或运行状态，隐藏其安装提示和相关菜单；保存后会提示成功并将按钮置灰，修改设置后按钮重新启用。关闭「启用 Trae 代理」会立即停用 Trae 路由、隐藏 Trae 菜单区块并清空其临时状态，WorkBuddy 不受影响。唤醒 Mac 后自动刷新；上次请求尚未结束时不会重复发起。
 - 读取失败时显示 ⚠，保留并明确标记上次结果，不会将未知额度显示为 0%。
 - 当前菜单栏优先显示 `codex` 额度；接口返回多个额度组时，全部列在菜单中。
 - 点击「退出 Codex Helper」关闭。
-- OpenCodex 状态以单行 `OpenCodex Running` 或 `OpenCodex Stop` 显示。一级操作保留「开启代理」「关闭代理」「控制台」；「更多…」提供「配置 / 刷新 WorkBuddy 代理」（启用 WorkBuddy 功能时）与「配置 / 刷新 Trae 代理」（启用 Trae 代理时），两者都会开启自己的路由、写入 `openai-chat` provider、同步模型（两家 provider 各自动态发现模型），重复点击只刷新配置并保留既有模型选择，首次配置才启用该家的模型。将配置导出到 `~/Downloads/OCX_CONF.json`，或选择 JSON 文件确认后导入。
+- 设置中启用 OpenCodex 功能后，状态以单行 `OpenCodex Running` 或 `OpenCodex Stop` 显示。一级操作保留「开启代理」「关闭代理」「控制台」；「更多…」提供「配置 / 刷新 WorkBuddy 代理」（启用 WorkBuddy 功能时）与「配置 / 刷新 Trae 代理」（启用 Trae 代理时），两者都会开启自己的路由、写入 `openai-chat` provider、同步模型（两家 provider 各自动态发现模型），重复点击只刷新配置并保留既有模型选择，首次配置才启用该家的模型。将配置导出到 `~/Downloads/OCX_CONF.json`，或选择 JSON 文件确认后导入。
 - 启用 WorkBuddy 功能后，可在菜单中启动 `127.0.0.1:58100` 的 Swift Chat Completions 代理。WorkBuddy 图形界面无需运行，但 `/Applications/WorkBuddy.app` 必须已安装且当前账户已登录。
 - 代理提供 `/health`、`/workbuddy/v1/models`、`/workbuddy/v1/chat/completions`，WorkBuddy 的本机 API Key 为 `workbuddy-local`。OpenCodex 的 `workbuddy` provider 使用 `openai-chat` adapter，并指向 `http://127.0.0.1:58100/workbuddy/v1`。旧的无前缀 `/v1` 别名已删除，升级后需重新点击「配置 / 刷新 WorkBuddy 代理」写入新地址。
 - 代理按 `workbuddy-cliproxy` 的实现调用 WorkBuddy `/v2/chat/completions`，上游保持强制流式；客户端 `stream: true` 返回 SSE，`stream: false` 或省略时返回标准 Chat Completion JSON，方便接入其他软件。代理还会替换两句上游拦截模板，并将 hy3 系列固定为 `reasoning_effort=high`。

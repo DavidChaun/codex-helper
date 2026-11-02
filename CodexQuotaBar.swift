@@ -337,7 +337,7 @@ func quotaRow(_ window: Window, stale: Bool) -> NSView {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
-    let updaterController = SPUStandardUpdaterController(startingUpdater: true,
+    lazy var updaterController = SPUStandardUpdaterController(startingUpdater: true,
                                                          updaterDelegate: nil,
                                                          userDriverDelegate: nil)
     let workBuddyAccounts = WorkBuddyAccountPool()
@@ -366,6 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var intervalField: NSTextField?
     var workBuddyEnabledButton: NSButton?
     var traeEnabledButton: NSButton?
+    var openCodexEnabledButton: NSButton?
     var settingsSaveButton: NSButton?
     var ocxStatusText = "OpenCodex Checking…"
     var ocxStatusItem: NSMenuItem?
@@ -385,11 +386,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var traeCreditsByAccount: [String: TraeCredits] = [:]
     var traeError: String?
     var traeBusy = false
+    var featureDefaults = UserDefaults.standard
     var workBuddyEnabled: Bool {
-        UserDefaults.standard.object(forKey: "workBuddyEnabled") as? Bool ?? true
+        featureDefaults.bool(forKey: "workBuddyEnabled")
     }
     var traeEnabled: Bool {
-        UserDefaults.standard.object(forKey: "traeEnabled") as? Bool ?? true
+        featureDefaults.bool(forKey: "traeEnabled")
+    }
+    var openCodexEnabled: Bool {
+        featureDefaults.bool(forKey: "openCodexEnabled")
     }
     // 两条路由各自判断：开的那个能用就起 listener，两个都不可用才停。
     var workBuddyRouteAvailable: Bool { workBuddyEnabled && workBuddyCLIInstalled }
@@ -644,12 +649,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             return item
         }
         let codexInstalled = codexExecutable() != nil
-        let ocxInstalled = executable(named: "ocx") != nil
-        let workBuddyInstalled = workBuddyCLIInstalled
+        let ocxInstalled = openCodexEnabled && executable(named: "ocx") != nil
+        let workBuddyInstalled = workBuddyEnabled && workBuddyCLIInstalled
         if !codexInstalled { installPrompt("⚠ 未检测到 Codex CLI，点击复制安装命令", copyText: codexInstallCommand) }
-        if !ocxInstalled { installPrompt("⚠ 未检测到 OpenCodex，点击复制安装命令", copyText: openCodexInstallCommand) }
-        if !workBuddyInstalled { installPrompt("⚠ 未检测到 WorkBuddy CLI，点击复制官网地址", copyText: workBuddyInstallURL) }
-        if !codexInstalled || !ocxInstalled || !workBuddyInstalled { menu.addItem(.separator()) }
+        if openCodexEnabled, !ocxInstalled { installPrompt("⚠ 未检测到 OpenCodex，点击复制安装命令", copyText: openCodexInstallCommand) }
+        if workBuddyEnabled, !workBuddyInstalled { installPrompt("⚠ 未检测到 WorkBuddy CLI，点击复制官网地址", copyText: workBuddyInstallURL) }
+        if !codexInstalled || (openCodexEnabled && !ocxInstalled) || (workBuddyEnabled && !workBuddyInstalled) { menu.addItem(.separator()) }
         if let quota = quota, !quota.buckets.isEmpty {
             for (id, bucket) in quota.buckets {
                 let name = bucket.limitName ?? (id == "codex" ? "Codex" : id)
@@ -879,7 +884,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(traeMoreItem)
         menu.addItem(.separator())
     }
-    ocxStatusItem = info(ocxStatusText)
+    ocxStatusItem = nil
+    ocxActionItems = []
+    ocxWorkBuddyConfigItem = nil
+    ocxTraeConfigItem = nil
+    if openCodexEnabled {
+        ocxStatusItem = info(ocxStatusText)
         ocxActionItems = [
             ("开启代理", #selector(enableOcx)),
             ("关闭代理", #selector(disableOcx)),
@@ -924,6 +934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(ocxMoreItem)
         ocxActionItems += [exportItem, importItem]
         menu.addItem(.separator())
+    }
         let update = NSMenuItem(title: "检查更新…",
                                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
                                 keyEquivalent: "")
@@ -1265,7 +1276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 188),
+    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 218),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Helper 设置"
         window.isReleasedWhenClosed = false
@@ -1274,13 +1285,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     let workBuddy = NSButton(checkboxWithTitle: "启用 WorkBuddy 功能", target: self, action: #selector(settingsChanged))
     workBuddy.state = workBuddyEnabled ? .on : .off
-    workBuddy.frame = NSRect(x: 24, y: 137, width: 342, height: 22)
+    workBuddy.frame = NSRect(x: 24, y: 167, width: 342, height: 22)
     workBuddyEnabledButton = workBuddy
 
     let trae = NSButton(checkboxWithTitle: "启用 Trae 代理", target: self, action: #selector(settingsChanged))
     trae.state = traeEnabled ? .on : .off
-    trae.frame = NSRect(x: 24, y: 107, width: 342, height: 22)
+    trae.frame = NSRect(x: 24, y: 137, width: 342, height: 22)
     traeEnabledButton = trae
+
+    let openCodex = NSButton(checkboxWithTitle: "启用 OpenCodex 功能", target: self, action: #selector(settingsChanged))
+    openCodex.state = openCodexEnabled ? .on : .off
+    openCodex.toolTip = "检测 OpenCodex 安装、运行状态并显示相关操作"
+    openCodex.frame = NSRect(x: 24, y: 107, width: 342, height: 22)
+    openCodexEnabledButton = openCodex
 
         let intervalLabel = NSTextField(labelWithString: "刷新间隔")
         intervalLabel.frame = NSRect(x: 24, y: 69, width: 76, height: 22)
@@ -1302,7 +1319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let versionLabel = NSTextField(labelWithString: "Codex Helper \(version)（Build \(build)）")
         versionLabel.textColor = .secondaryLabelColor
         versionLabel.frame = NSRect(x: 24, y: 20, width: 342, height: 22)
-    [workBuddy, trae, intervalLabel, field, seconds, save, versionLabel].forEach { content.addSubview($0) }
+    [workBuddy, trae, openCodex, intervalLabel, field, seconds, save, versionLabel].forEach { content.addSubview($0) }
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -1322,9 +1339,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let value = min(3600, max(5, field.doubleValue))
         UserDefaults.standard.set(value, forKey: "refreshInterval")
     let enabled = workBuddyEnabledButton?.state == .on
-    UserDefaults.standard.set(enabled, forKey: "workBuddyEnabled")
+    featureDefaults.set(enabled, forKey: "workBuddyEnabled")
     let traeOn = traeEnabledButton?.state == .on
-    UserDefaults.standard.set(traeOn, forKey: "traeEnabled")
+    featureDefaults.set(traeOn, forKey: "traeEnabled")
+    featureDefaults.set(openCodexEnabledButton?.state == .on, forKey: "openCodexEnabled")
     field.stringValue = String(Int(value))
     resetTimer()
     // 两条路由各自按自己的开关与上游可用性生效，互不影响。
@@ -1351,6 +1369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         traeError = nil
     }
     applyProxyRouteState()
+    refreshOcxStatus()
     render()
         settingsSaveButton?.isEnabled = false
         let alert = NSAlert()
@@ -1360,7 +1379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func setOcxBusy(_ busy: Bool, message: String? = nil) {
         ocxBusy = busy
-        let ocxInstalled = executable(named: "ocx") != nil
+        let ocxInstalled = openCodexEnabled && executable(named: "ocx") != nil
     ocxActionItems.forEach { $0.isEnabled = !busy && ocxInstalled }
     ocxWorkBuddyConfigItem?.isEnabled = !busy && ocxInstalled && workBuddyCLIInstalled
     ocxTraeConfigItem?.isEnabled = !busy && ocxInstalled && traeRouteAvailable
@@ -1371,7 +1390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     @objc func refreshOcxStatus() {
-        guard !ocxBusy, !ocxChecking else { return }
+        guard openCodexEnabled, !ocxBusy, !ocxChecking else { return }
         guard executable(named: "ocx") != nil else {
             ocxStatusText = "未检测到 OpenCodex"
             ocxStatusItem?.title = ocxStatusText
@@ -1382,6 +1401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             let result = Result { try runCommand("ocx", ["health", "--json"], timeout: 5, includeStandardError: false) }
             DispatchQueue.main.async {
                 self.ocxChecking = false
+                guard self.openCodexEnabled else { return }
                 switch result {
                 case .success(let health):
                     let running = health.data(using: .utf8)
@@ -1397,6 +1417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func runOcx(_ commands: [[String]], progress: String, success: String,
                 completion: ((Result<Void, Error>) -> Void)? = nil) {
+        guard openCodexEnabled else { return }
         setOcxBusy(true, message: progress)
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -1430,7 +1451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     @objc func configureOcxWorkBuddy() {
-        guard workBuddyRouteAvailable, executable(named: "ocx") != nil else {
+        guard openCodexEnabled, workBuddyRouteAvailable, executable(named: "ocx") != nil else {
             render()
             return
         }
@@ -1448,7 +1469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     @objc func configureOcxTrae() {
-        guard traeRouteAvailable, executable(named: "ocx") != nil else {
+        guard openCodexEnabled, traeRouteAvailable, executable(named: "ocx") != nil else {
             render()
             return
         }
@@ -1488,6 +1509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     @objc func importOcxConfig() {
+        guard openCodexEnabled else { return }
         let panel = NSOpenPanel()
         panel.title = "选择 OpenCodex 配置"
         panel.allowedContentTypes = [.json]
@@ -1511,6 +1533,18 @@ struct CodexHelperMain {
 static func main() throws {
 signal(SIGPIPE, SIG_IGN)
 if CommandLine.arguments.contains("--self-test") {
+    let featureDefaults = UserDefaults(suiteName: "local.codex.helper.self-test.\(UUID().uuidString)")!
+    let settingsDelegate = AppDelegate()
+    settingsDelegate.featureDefaults = featureDefaults
+    precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.traeEnabled && !settingsDelegate.openCodexEnabled)
+    precondition(!settingsDelegate.workBuddyRouteAvailable && !settingsDelegate.traeRouteAvailable)
+    settingsDelegate.ocxStatusText = "unchecked"
+    settingsDelegate.refreshOcxStatus()
+    settingsDelegate.runOcx([["--version"]], progress: "unexpected", success: "unexpected")
+    precondition(!settingsDelegate.ocxChecking && !settingsDelegate.ocxBusy && settingsDelegate.ocxStatusText == "unchecked")
+    featureDefaults.setVolatileDomain(["workBuddyEnabled": true, "traeEnabled": true, "openCodexEnabled": true],
+                                     forName: UserDefaults.argumentDomain)
+    precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
