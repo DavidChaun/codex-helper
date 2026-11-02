@@ -339,11 +339,18 @@ private func symbol(_ name: String, frame: NSRect, color: NSColor = .controlAcce
     return image
 }
 
-private func menuHeader() -> NSView {
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 58))
-    view.addSubview(symbol("square.stack.3d.up.fill", frame: NSRect(x: 18, y: 17, width: 30, height: 30)))
-    view.addSubview(label("Codex Helper", frame: NSRect(x: 60, y: 29, width: 242, height: 21), size: 16, weight: .semibold))
-    view.addSubview(label("额度与用量，一目了然", frame: NSRect(x: 60, y: 10, width: 242, height: 17), size: 11, color: .secondaryLabelColor))
+func quotaHeading(_ name: String, plan: String?) -> NSView {
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 42))
+    let title = label(name, frame: NSRect(x: 26, y: 10, width: plan == nil ? 268 : 180, height: 25), size: 18, weight: .bold)
+    title.toolTip = name
+    view.addSubview(title)
+    if let plan {
+        let text = plan.replacingOccurrences(of: "_", with: "").lowercased() == "prolite" ? "ProLite" : plan.capitalized
+        let badge = label(text, frame: NSRect(x: 210, y: 13, width: 84, height: 19), size: 12, weight: .semibold, color: .controlAccentColor)
+        badge.alignment = .right
+        badge.toolTip = text
+        view.addSubview(badge)
+    }
     return view
 }
 
@@ -671,9 +678,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.autoenablesItems = false
         menu.delegate = self
         menu.minimumWidth = 320
-        let header = NSMenuItem()
-        header.view = menuHeader()
-        menu.addItem(header)
         @discardableResult func section(_ title: String) -> NSMenuItem {
             let item = NSMenuItem.sectionHeader(title: title)
             menu.addItem(item)
@@ -715,7 +719,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if let quota = quota, !quota.buckets.isEmpty {
             for (id, bucket) in quota.buckets {
                 let name = bucket.limitName ?? (id == "codex" ? "Codex" : id)
-                section(name + (bucket.planType.map { " · \($0.capitalized)" } ?? ""))
+                let heading = NSMenuItem()
+                heading.view = quotaHeading(name, plan: bucket.planType)
+                menu.addItem(heading)
                 if bucket.windows.isEmpty { info("此账户暂无额度窗口数据") }
                 for window in bucket.windows {
                     let item = NSMenuItem()

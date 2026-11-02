@@ -24,10 +24,19 @@ struct UICheck {
         let dateWindow = app.windows.first { $0.title == "按日期查询用量" }!
         let pickers = dateWindow.contentView!.subviews.compactMap { $0 as? NSDatePicker }
         precondition(pickers.count == 2 && pickers.allSatisfy { $0.maxDate != nil })
+        for rawPlan in ["prolite", "pro_lite", "ProLite"] {
+            let heading = quotaHeading("Codex", plan: rawPlan)
+            let fields = heading.subviews.compactMap { $0 as? NSTextField }
+            precondition(fields.map(\.stringValue) == ["Codex", "ProLite"])
+            precondition(fields[0].font!.pointSize > fields[1].font!.pointSize)
+        }
+        precondition(quotaHeading("Codex", plan: nil).subviews.count == 1)
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             app.appearance = NSAppearance(named: appearance)
             let theme = appearance == .aqua ? "light" : "dark"
-            for (name, view) in [("settings", settings.contentView!), ("date", dateWindow.contentView!),
+            for (name, view) in [("heading", quotaHeading("Codex", plan: "prolite")),
+                                  ("heading-no-plan", quotaHeading("Codex", plan: nil)),
+                                  ("settings", settings.contentView!), ("date", dateWindow.contentView!),
                                   ("quota", quotaRow(Window(usedPercent: 6, windowDurationMins: 10080, resetsAt: 1793659200), stale: false)),
                                   ("low", quotaRow(Window(usedPercent: 96, windowDurationMins: 300, resetsAt: nil), stale: false)),
                                   ("stale", quotaRow(Window(usedPercent: 0, windowDurationMins: 300, resetsAt: nil), stale: true))] {
