@@ -117,14 +117,13 @@ enum CodexTokenPricing {
               let uncached = amounts.uncached, let cached = amounts.cached,
               let write = amounts.cacheWrite else { return CodexTokenCosts(serviceTiers: [label]) }
         // shortcut: 用日志中的请求档位和默认 30 分钟缓存估价；实际回退和其他缓存寿命需响应元数据。
-        let inputMultiplier: Decimal = (amounts.input > 272_000 ? 2 : 1) * multiplier
-        let outputMultiplier: Decimal = (amounts.input > 272_000 ? Decimal(3) / 2 : 1) * multiplier
+        // 订阅用量折算不加收长上下文费，只按请求档位调整单价。
         return CodexTokenCosts(
-            uncached: Decimal(uncached) * rate.input * inputMultiplier / 1_000_000,
-            cached: Decimal(cached) * rate.cached * inputMultiplier / 1_000_000,
-            cacheWrite: Decimal(write) * rate.input * 5 / 4 * inputMultiplier / 1_000_000,
-            output: Decimal(amounts.output) * rate.output * outputMultiplier / 1_000_000,
-            reasoning: Decimal(amounts.reasoning ?? 0) * rate.output * outputMultiplier / 1_000_000,
+            uncached: Decimal(uncached) * rate.input * multiplier / 1_000_000,
+            cached: Decimal(cached) * rate.cached * multiplier / 1_000_000,
+            cacheWrite: Decimal(write) * rate.input * 5 / 4 * multiplier / 1_000_000,
+            output: Decimal(amounts.output) * rate.output * multiplier / 1_000_000,
+            reasoning: Decimal(amounts.reasoning ?? 0) * rate.output * multiplier / 1_000_000,
             serviceTiers: [label])
     }
 
@@ -588,13 +587,15 @@ extension CodexTokenUsageReader {
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-terra", amounts: priced) == Decimal(16) / 100)
         var long = priced
         long.input = 300_000
-        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long) == Decimal(99) / 100)
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long) == Decimal(52) / 100)
         let longParts = CodexTokenPricing.breakdown(model: "gpt-6.1-sol", amounts: long)
-        precondition(longParts.uncached == Decimal(72) / 100 && longParts.cached == Decimal(2) / 100)
-        precondition(longParts.cacheWrite == Decimal(10) / 100 && longParts.output == Decimal(15) / 100)
-        precondition(longParts.reasoning == Decimal(45) / 1000)
+        precondition(longParts.uncached == Decimal(36) / 100 && longParts.cached == parts.cached)
+        precondition(longParts.cacheWrite == parts.cacheWrite && longParts.output == parts.output)
+        precondition(longParts.reasoning == parts.reasoning)
         long.input = 272_000
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long) == Decimal(464) / 1000)
+        long.input = 272_001
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long) == Decimal(464002) / 1_000_000)
         precondition(CodexTokenPricing.estimate(model: "codex-auto-review", amounts: priced) == 0)
         precondition(CodexTokenPricing.estimate(model: "workbuddy/glm-5.3", amounts: priced) == 0)
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: missing) == 0)
@@ -608,7 +609,7 @@ extension CodexTokenUsageReader {
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: priced, serviceTier: "auto") == 0)
         precondition(CodexTokenPricing.estimate(model: "codex-auto-review", amounts: priced, serviceTier: "fast") == 0)
         long.input = 300_000
-        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long, serviceTier: "fast") == Decimal(198) / 100)
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long, serviceTier: "fast") == longParts.total * 2)
         precondition(CodexTokenPricing.dollars(0) == "$0.00")
         precondition(CodexTokenPricing.dollars(Decimal(1005) / 1000) == "$1.01")
         var priceData = try line("turn_context", ["model": "gpt-6.1-sol"])
