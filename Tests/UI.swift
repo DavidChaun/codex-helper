@@ -52,12 +52,15 @@ struct UICheck {
             secondary: Window(usedPercent: 6, windowDurationMins: 10080, resetsAt: now.addingTimeInterval(86400).timeIntervalSince1970),
             planType: "prolite"), rateLimitsByLimitId: nil)
         let week = delegate.quota!.weeklyRange()!
+        let previous = CodexQuotaCycle(start: week.start.addingTimeInterval(-259200), end: week.start,
+            reset: week.start.addingTimeInterval(345600), usedPercent: 100,
+            observedAt: week.start.addingTimeInterval(-60), reconstructed: true)
         let custom = try CodexTokenUsageReader.dateRange(from: now.addingTimeInterval(-86400), through: now)
         let group = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .fast)
         let amounts = CodexTokenAmounts(input: 100, output: 10)
         var periods = [("今日", DateInterval(start: now.addingTimeInterval(-3600), duration: 7200)),
-                       ("当前周额度", week), ("自选区间", custom)].map { name, range in
-            var period = CodexTokenUsagePeriod(name: name, interval: range)
+                       ("当前周额度", week), ("上一轮额度", previous.interval), ("自选区间", custom)].map { name, range in
+            var period = CodexTokenUsagePeriod(name: name, interval: range, isDateQuery: name == "自选区间")
             period.models[group] = amounts
             period.costs[group] = CodexTokenCosts(output: 1)
             period.models[CodexTokenUsageGroup(model: "unsupported-price", tier: .unknown)] = amounts
@@ -69,7 +72,8 @@ struct UICheck {
         periods.append(CodexTokenUsagePeriod(name: "零金额区间", interval: custom))
         let snapshot = CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: "Asia/Shanghai",
             unreadableFiles: 0, skippedEvents: 0,
-            devices: [CodexUsageDevice(id: UUID().uuidString, name: "Test Mac", updated: now)], syncMessage: "iCloud · 已读取 2 台设备的数据")
+            devices: [CodexUsageDevice(id: UUID().uuidString, name: "Test Mac", updated: now)],
+            syncMessage: "iCloud · 已读取 2 台设备的数据", previousQuotaCycle: previous)
         defaults.setVolatileDomain(["workBuddyEnabled": false, "traeEnabled": false,
                                    "openCodexEnabled": false, "usageCloudEnabled": true],
                                   forName: UserDefaults.argumentDomain)
@@ -79,7 +83,8 @@ struct UICheck {
         delegate.render()
         let menu = delegate.status.menu!
         let usageStart = menu.items.firstIndex { $0.title == "费用估算 · USD" }!
-        let usageEnd = menu.items.firstIndex { $0.title == "按日期区间查询…" }!
+        let usageEnd = menu.items.firstIndex { $0.title == "清除日期查询" }!
+        precondition(menu.items[usageEnd].action == #selector(AppDelegate.clearTokenDateRange))
         func noViewTooltips(_ view: NSView) {
             precondition(view.toolTip == nil, "An informational view must not cover the submenu")
             view.subviews.forEach(noViewTooltips)
@@ -91,7 +96,7 @@ struct UICheck {
         }
         menu.items[usageStart...usageEnd].forEach(noMenuTooltips)
         precondition(!menu.items.contains { $0.title.hasPrefix("零金额区间") })
-        for name in ["今日", "当前周额度", "自选区间"] {
+        for name in ["今日", "当前周额度", "上一轮额度", "自选区间"] {
             let item = menu.items.first { $0.title.hasPrefix(name) }!
             precondition(!item.submenu!.items.contains { $0.title.contains("unsupported-price") || $0.title.contains("tiny-cost") || $0.title.contains("$0.00") })
             let notes = item.submenu!.items.compactMap { ($0.view?.subviews.first as? NSTextField)?.stringValue }
@@ -99,6 +104,11 @@ struct UICheck {
         }
         let source = menu.items.first { $0.title.hasPrefix("统计来源：") }!
         precondition(source.submenu!.items.contains { ($0.view?.subviews.first as? NSTextField)?.stringValue.hasPrefix("数据更新于 ") == true })
+        let previousNotes = menu.items.first { $0.title.hasPrefix("上一轮额度") }!.submenu!.items.compactMap {
+            ($0.view?.subviews.first as? NSTextField)?.stringValue
+        }
+        precondition(previousNotes.contains { $0.contains("已用 100%") })
+        precondition(previousNotes.contains { $0.contains("周重置时间发生变更") })
         let intervalText = (menu.items.first { $0.title.hasPrefix("当前周额度") }!.submenu!.items.last!.view!.subviews.first as! NSTextField).stringValue
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             app.appearance = NSAppearance(named: appearance)
@@ -106,6 +116,7 @@ struct UICheck {
             for (name, view) in [("warning", menuInfo(warning)),
                                   ("sync-warning", menuInfo("⚠ iCloud 暂不可用，保留本机及已缓存的其他设备用量；部分用量尚未写入 iCloud，下次自动重试")),
                                   ("usage-interval", menuInfo(intervalText)),
+                                  ("previous-quota", menuInfo(previousNotes.joined(separator: "\n"))),
                                   ("heading", quotaHeading("Codex", plan: "prolite")),
                                   ("heading-no-plan", quotaHeading("Codex", plan: nil)),
                                   ("settings", settings.contentView!), ("date", dateWindow.contentView!),
@@ -137,8 +148,25 @@ struct UICheck {
                     to: URL(fileURLWithPath: ".build/ui-check/\(name)-\(theme).png"))
             }
         }
+        delegate.clearTokenDateRange()
+        let cleared = delegate.status.menu!
+        precondition(!cleared.items.contains { $0.title == "清除日期查询" || $0.title.hasPrefix("自选区间") })
+        precondition(["今日", "当前周额度", "上一轮额度"].allSatisfy { name in
+            cleared.items.contains { $0.title.hasPrefix(name) }
+        }, "Clearing a date query must preserve the quota periods")
+        var overlapping = snapshot
+        var sameCycleQuery = CodexTokenUsagePeriod(name: "同周期查询", interval: week, isDateQuery: true)
+        sameCycleQuery.models[group] = amounts
+        sameCycleQuery.costs[group] = CodexTokenCosts(output: 1)
+        overlapping.periods.append(sameCycleQuery)
+        delegate.setUsageForUICheck(overlapping, range: week)
+        delegate.render()
+        precondition(delegate.status.menu!.items.contains { $0.title.hasPrefix("同周期查询") })
+        delegate.clearTokenDateRange()
+        precondition(!delegate.status.menu!.items.contains { $0.title.hasPrefix("同周期查询") || $0.title.hasPrefix("自选区间") })
+        precondition(delegate.status.menu!.items.contains { $0.title.hasPrefix("当前周额度") })
         settings.close()
         dateWindow.close()
-        print("PASS: light/dark UI, label bounds, settings, dates, and no hover tooltips throughout usage menus")
+        print("PASS: light/dark UI, label bounds, previous quota, clearing dates, and no hover tooltips throughout usage menus")
     }
 }

@@ -305,6 +305,35 @@ func readQuota() throws -> Quota {
     throw Date() >= deadline ? QueryError.timeout : QueryError.request
 }
 
+func readTokenUsage(_ reader: CodexTokenUsageReader, quota: Quota?, quotaObservedAt: Date?,
+                    historyData: Data?, range: DateInterval? = nil,
+                    sync: CodexUsageSync? = nil, device: String? = nil,
+                    now: Date = Date()) throws -> (snapshot: CodexTokenUsageSnapshot, historyData: Data?) {
+    var history = CodexQuotaHistory()
+    var historyWarning: String?
+    do { history = try CodexQuotaHistory.decode(historyData) }
+    catch { historyWarning = "上一轮额度存档无法读取，已保留原存档" }
+    let previousRange = history.previous?.interval
+    let week = quota?.weeklyRange(now: now)
+    var snapshot = try reader.read(now: now, weeklyRange: week, previousWeeklyRange: previousRange,
+                                   range: range, sync: sync, device: device)
+    if historyWarning == nil {
+        history.recover(reader.historicalQuotaObservations())
+        if let week, let observedAt = quotaObservedAt,
+           let used = quota?.buckets.first?.1.windows.first(where: { $0.windowDurationMins == 10080 })?.usedPercent {
+            history.observe(CodexWeeklyQuotaObservation(reset: week.end, usedPercent: used, observedAt: observedAt))
+        }
+        if history.previous?.interval != previousRange {
+            snapshot = try reader.read(now: now, weeklyRange: week, previousWeeklyRange: history.previous?.interval,
+                                       range: range, sync: sync, device: device)
+        }
+        snapshot.previousQuotaCycle = history.previous
+    } else if let historyWarning {
+        snapshot.usageWarnings.append(historyWarning)
+    }
+    return (snapshot, historyWarning == nil ? try JSONEncoder().encode(history) : nil)
+}
+
 private final class CardSurface: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
@@ -644,10 +673,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         tokenUsageBusy = true
         let requestedRange = tokenUsageRange
         let requestedWeek = quota?.weeklyRange()
+        let requestedQuota = quota
+        let requestedQuotaTime = updated
+        let historyData = featureDefaults.data(forKey: CodexQuotaHistory.defaultsKey)
         let requestedCloud = usageCloudEnabled
         let requestedDevice = usageDevice
         tokenUsageQueue.async {
-            let result = Result { try self.tokenUsageReader.read(weeklyRange: requestedWeek, range: requestedRange,
+            let result = Result { try readTokenUsage(self.tokenUsageReader, quota: requestedQuota,
+                quotaObservedAt: requestedQuotaTime, historyData: historyData, range: requestedRange,
                 sync: requestedCloud ? self.usageSync : nil, device: requestedDevice) }
             DispatchQueue.main.async {
                 self.tokenUsageBusy = false
@@ -657,8 +690,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     return
                 }
                 switch result {
-                case .success(let snapshot):
-                    self.tokenUsage = snapshot
+                case .success(let value):
+                    self.tokenUsage = value.snapshot
+                    if let data = value.historyData { self.featureDefaults.set(data, forKey: CodexQuotaHistory.defaultsKey) }
                     self.tokenUsageError = nil
                 case .failure(let error):
                     self.tokenUsageError = error.localizedDescription
@@ -810,11 +844,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 item.submenu = periodMenu
                 periodMenu.addItem(.separator())
                 var intervalText = "\(period.interval.start.formatted(date: .numeric, time: .shortened)) 至 \(period.interval.end.formatted(date: .numeric, time: .shortened))\n时区：\(tokenUsage.timeZone)"
-                if let range = tokenUsageRange, period.interval == range {
+                if period.isDateQuery, let range = tokenUsageRange {
                     let end = range.end.addingTimeInterval(-1)
                     intervalText = "\(range.start.formatted(date: .numeric, time: .omitted)) 至 \(end.formatted(date: .numeric, time: .omitted))（含首尾当天）\n时区：\(tokenUsage.timeZone)"
                 }
                 info(intervalText, in: periodMenu)
+                if period.name == "上一轮额度", let cycle = tokenUsage.previousQuotaCycle {
+                    info("最后记录：已用 \(cycle.usedPercent.formatted(.number.precision(.fractionLength(0...1))))%", in: periodMenu)
+                    if cycle.changedEarly { info("期间周重置时间发生变更", in: periodMenu) }
+                    if cycle.reconstructed { info("周期边界按观测记录还原；用量以保留记录为准", in: periodMenu) }
+                }
                 menu.addItem(item)
             }
             if tokenUsage.periods.allSatisfy({ CodexTokenPricing.dollars($0.estimatedUSD) == "$0.00" }) { info("暂无可展示的计价用量") }
@@ -830,6 +869,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let dateQuery = NSMenuItem(title: "按日期区间查询…", action: #selector(showTokenDateRange), keyEquivalent: "")
         dateQuery.target = self
         menu.addItem(dateQuery)
+        if tokenUsageRange != nil {
+            let clearQuery = NSMenuItem(title: "清除日期查询", action: #selector(clearTokenDateRange), keyEquivalent: "")
+            clearQuery.target = self
+            menu.addItem(clearQuery)
+        }
         menu.addItem(.separator())
     if workBuddyEnabled {
         section("WorkBuddy  ·  " + (workBuddyProxy.isWorkBuddyRunning ? "运行中" : "已停止"))
@@ -1392,6 +1436,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         render()
     }
 
+    @objc func clearTokenDateRange() {
+        tokenUsageRange = nil
+        tokenUsage?.periods.removeAll { $0.isDateQuery }
+        tokenUsageError = nil
+        if tokenUsage == nil { refreshTokenUsage() }
+        render()
+    }
+
     @objc func showSettings() {
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
@@ -1693,6 +1745,7 @@ if CommandLine.arguments.contains("--self-test") {
                                      forName: UserDefaults.argumentDomain)
     precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
+    try CodexQuotaHistory.selfTest()
     try CodexResponseTimingReader.selfTest()
     try CodexBackgroundUsageReader.selfTest()
     try CodexUsageSync.selfTest()
@@ -1773,10 +1826,12 @@ if CommandLine.arguments.contains("--self-test") {
     TraeAccountPool.selfTest()
     print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
 } else if CommandLine.arguments.contains("--check-token-usage") {
-    let weeklyRange = (try? readQuota())?.weeklyRange()
+    let quota = try? readQuota()
+    let weeklyRange = quota?.weeklyRange()
     let cloud = UserDefaults.standard.bool(forKey: "usageCloudEnabled") ? CodexUsageSync() : nil
-    let snapshot = try CodexTokenUsageReader().read(weeklyRange: weeklyRange, sync: cloud,
-        device: UserDefaults.standard.string(forKey: "usageDevice"))
+    let snapshot = try readTokenUsage(CodexTokenUsageReader(), quota: quota, quotaObservedAt: Date(),
+        historyData: UserDefaults.standard.data(forKey: CodexQuotaHistory.defaultsKey), sync: cloud,
+        device: UserDefaults.standard.string(forKey: "usageDevice")).snapshot
     print("本机 Token 用量 · \(snapshot.timeZone)")
     if let message = snapshot.syncMessage { print(message) }
     for device in snapshot.devices { print("设备：\(device.name)；数据更新：\(device.updated?.description ?? "暂无")") }

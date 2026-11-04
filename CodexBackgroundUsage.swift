@@ -70,6 +70,19 @@ extension CodexBackgroundUsageReader {
         precondition(!retry.read().warnings.isEmpty)
         try FileManager.default.removeItem(at: brokenParent)
         precondition(retry.read().warnings.isEmpty && FileManager.default.fileExists(atPath: brokenParent.appendingPathComponent("v1.json").path), "Retry a failed cache write without needing new events")
+        let chunkLogs = root.appendingPathComponent("chunk-logs")
+        try FileManager.default.createDirectory(at: chunkLogs, withIntermediateDirectories: true)
+        var chunks = Data(repeating: 65, count: 1_048_560)
+        chunks.append(10)
+        chunks.append(Data(line(13, feature: "cross_chunk").utf8))
+        chunks.append(Data(String(repeating: "debug\n", count: 10000).utf8))
+        chunks.append(Data(repeating: 65, count: 5 * 1024 * 1024))
+        chunks.append(10)
+        chunks.append(Data(line(14, feature: "after_long_line").utf8))
+        try chunks.write(to: chunkLogs.appendingPathComponent("chunks.log"))
+        let chunked = CodexBackgroundUsageReader(logRoot: chunkLogs).read()
+        precondition(chunked.records.count == 2 && chunked.skipped == 0 && chunked.unreadable == 0,
+                     "Read chunk-spanning events and resume after overlong unrelated lines")
         let sessions = root.appendingPathComponent("native-codex/sessions")
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
         let nativeFile = sessions.appendingPathComponent("native.jsonl")
@@ -130,6 +143,7 @@ final class CodexBackgroundUsageReader {
     private var records: [String: CodexUsageRecord] = [:]
     private var files: [String: State] = [:]
     private let fields = try! NSRegularExpression(pattern: #"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=("(?:\\.|[^"\\])*"|[^\s]+)"#)
+    private let usageMarker = Data(" [ephemeral-generation] ephemeral_generation_token_usage ".utf8)
     private let iso = ISO8601DateFormatter()
     private let fractional: ISO8601DateFormatter = {
         let value = ISO8601DateFormatter(); value.formatOptions.insert(.withFractionalSeconds); return value
@@ -141,6 +155,7 @@ final class CodexBackgroundUsageReader {
     }
 
     private func parse(_ data: Data) throws -> CodexUsageRecord? {
+        guard data.range(of: usageMarker) != nil else { return nil }
         let line = String(decoding: data, as: UTF8.self)
         guard let prefix = line.range(of: " [ephemeral-generation] ephemeral_generation_token_usage "),
               let space = line.firstIndex(of: " "), space < prefix.lowerBound,
@@ -228,13 +243,17 @@ final class CodexBackgroundUsageReader {
                     try handle.seek(toOffset: state.offset)
                     while state.offset < size, let chunk = try handle.read(upToCount: Int(min(1_048_576, size - state.offset))), !chunk.isEmpty {
                         state.offset += UInt64(chunk.count); state.pending.append(chunk)
-                        while let newline = state.pending.firstIndex(of: 10) {
-                            let line = Data(state.pending[..<newline]); state.pending.removeSubrange(...newline)
+                        var start = state.pending.startIndex
+                        while let newline = state.pending[start...].firstIndex(of: 10) {
+                            let line = Data(state.pending[start..<newline])
+                            start = state.pending.index(after: newline)
                             if state.discarding { state.discarding = false; continue }
                             do {
                                 if let record = try parse(line), records[record.id] != record { records[record.id] = record; dirty = true }
                             } catch { state.skipped += 1 }
                         }
+                        // 每块只复制剩余半行，避免每处理一行都搬动整个缓冲区。
+                        state.pending = state.pending.subdata(in: start..<state.pending.endIndex)
                         // 普通调试日志可能含很长的消息；超过 4MB 的一行不属于此用量事件格式。
                         if state.pending.count > 4 * 1024 * 1024 {
                             if String(decoding: state.pending.prefix(200), as: UTF8.self).contains(" [ephemeral-generation] ephemeral_generation_token_usage ") { state.skipped += 1 }

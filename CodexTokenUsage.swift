@@ -137,6 +137,7 @@ enum CodexTokenPricing {
 struct CodexTokenUsagePeriod {
     let name: String
     let interval: DateInterval
+    var isDateQuery = false
     var models: [CodexTokenUsageGroup: CodexTokenAmounts] = [:]
     var costs: [CodexTokenUsageGroup: CodexTokenCosts] = [:]
     var performance: [CodexTokenUsageGroup: CodexOutputPerformance] = [:]
@@ -172,7 +173,7 @@ struct CodexOutputPerformance {
 }
 
 struct CodexTokenUsageSnapshot {
-    let periods: [CodexTokenUsagePeriod]
+    var periods: [CodexTokenUsagePeriod]
     let updated: Date
     let timeZone: String
     let unreadableFiles: Int
@@ -180,6 +181,7 @@ struct CodexTokenUsageSnapshot {
     var devices: [CodexUsageDevice] = []
     var syncMessage: String?
     var usageWarnings: [String] = []
+    var previousQuotaCycle: CodexQuotaCycle?
 }
 
 enum CodexTokenUsageError: LocalizedError {
@@ -222,10 +224,24 @@ final class CodexTokenUsageReader {
         struct ThreadSettings: Decodable {
             let service_tier: String?
         }
+        struct HistoricalRateLimits: Decodable {
+            let limit_id: String?
+            let primary: HistoricalWindow?
+            let secondary: HistoricalWindow?
+        }
+        struct HistoricalWindow: Decodable {
+            let used_percent: Double
+            let window_minutes: Int?
+            let resets_at: Double?
+        }
         struct Info: Decodable {
             let total_token_usage: CodexTokenAmounts?
             let last_token_usage: CodexTokenAmounts?
         }
+    }
+    private struct HistoricalQuota: Decodable {
+        let payload: Payload
+        struct Payload: Decodable { let rate_limits: Record.HistoricalRateLimits }
     }
     private struct Event {
         var record: CodexUsageRecord
@@ -245,6 +261,7 @@ final class CodexTokenUsageReader {
         var lastOutput: Date?
         var previousUsage: Date?
         var pendingUsage: (record: CodexUsageRecord, date: Date, span: CodexResponseSpan?)?
+        var quotaObservations: [Double: CodexWeeklyQuotaObservation] = [:]
     }
 
     private let root: URL
@@ -263,6 +280,7 @@ final class CodexTokenUsageReader {
     private let contextMarker = Data("\"turn_context\"".utf8)
     private let settingsMarker = Data("\"thread_settings_applied\"".utf8)
     private let nativeUsageMarker = Data("\"token_usage_record\"".utf8)
+    private let quotaMarker = Data("\"rate_limits\"".utf8)
     private let outputMarker = Data("\"response_item\"".utf8)
 
     init(root: URL? = nil, backgroundLogs: URL? = nil) {
@@ -328,6 +346,18 @@ final class CodexTokenUsageReader {
             state.serviceTier = record.payload.thread_settings?.service_tier
             return
         }
+        if record.type == "event_msg", record.payload.type == "token_count",
+           line.range(of: quotaMarker) != nil,
+           let rate = (try? decoder.decode(HistoricalQuota.self, from: line))?.payload.rate_limits,
+           rate.limit_id == nil || rate.limit_id == "codex",
+           let date = fractionalISO.date(from: record.timestamp) ?? iso.date(from: record.timestamp) {
+            for window in [rate.primary, rate.secondary].compactMap({ $0 }) where window.window_minutes == 10080 {
+                guard let reset = window.resets_at else { continue }
+                let observation = CodexWeeklyQuotaObservation(reset: Date(timeIntervalSince1970: reset),
+                    usedPercent: window.used_percent, observedAt: date)
+                if observation.valid { state.quotaObservations[reset] = observation }
+            }
+        }
         guard record.type == "event_msg", record.payload.type == "token_count",
               let info = record.payload.info else { return }
         defer { state.pendingUsage = nil; state.firstOutput = nil; state.lastOutput = nil }
@@ -356,8 +386,12 @@ final class CodexTokenUsageReader {
             requestKey: pending?.record.requestKey), responseSpan: span))
     }
 
+    func historicalQuotaObservations() -> [CodexWeeklyQuotaObservation] {
+        files.values.flatMap { $0.quotaObservations.values }
+    }
+
     func read(now: Date = Date(), timeZone: TimeZone = .current,
-              weeklyRange: DateInterval? = nil, range: DateInterval? = nil,
+              weeklyRange: DateInterval? = nil, previousWeeklyRange: DateInterval? = nil, range: DateInterval? = nil,
               sync: CodexUsageSync? = nil, device: String? = nil) throws -> CodexTokenUsageSnapshot {
         if let range, range.duration == 0 { throw CodexTokenUsageError.invalidRange }
         var calendar = Calendar(identifier: .gregorian)
@@ -365,6 +399,9 @@ final class CodexTokenUsageReader {
         var periods = [CodexTokenUsagePeriod(name: "今日", interval: calendar.dateInterval(of: .day, for: now)!)]
         if let weeklyRange, weeklyRange.start <= now, now < weeklyRange.end {
             periods.append(CodexTokenUsagePeriod(name: "当前周额度", interval: weeklyRange))
+        }
+        if let previousWeeklyRange, previousWeeklyRange.duration > 0, previousWeeklyRange.end <= now {
+            periods.append(CodexTokenUsagePeriod(name: "上一轮额度", interval: previousWeeklyRange))
         }
         if let range {
             let lastDay = range.end.addingTimeInterval(-1)
@@ -375,7 +412,7 @@ final class CodexTokenUsageReader {
             formatter.dateFormat = calendar.isDate(range.start, equalTo: now, toGranularity: .year)
                 && calendar.isDate(lastDay, equalTo: now, toGranularity: .year) ? "M/d" : "yy/M/d"
             periods.append(CodexTokenUsagePeriod(
-                name: formatter.string(from: range.start) + "–" + formatter.string(from: lastDay), interval: range))
+                name: formatter.string(from: range.start) + "–" + formatter.string(from: lastDay), interval: range, isDateQuery: true))
         }
         let querySince = periods.map { $0.interval.start }.min()!
         responseTiming.refresh()
@@ -517,7 +554,13 @@ extension CodexTokenUsageReader {
         let unknownSol = CodexTokenUsageGroup(model: "gpt-6.1-sol", tier: .unknown)
         let cycleStart = ISO8601DateFormatter().date(from: "2026-10-28T12:00:00Z")!
         let cycle = DateInterval(start: cycleStart, duration: 7 * 24 * 60 * 60)
+        let historicalQuota = try line("event_msg", ["type": "token_count", "rate_limits": [
+            "limit_id": "codex", "primary": ["used_percent": 87, "window_minutes": 10080,
+                                              "resets_at": cycle.end.timeIntervalSince1970]]])
+        try historicalQuota.write(to: sessions.appendingPathComponent("quota-history.jsonl"))
         let first = try reader.read(now: now, timeZone: zone, weeklyRange: cycle)
+        precondition(reader.historicalQuotaObservations().count == 1
+                     && reader.historicalQuotaObservations()[0].usedPercent == 87)
         let totals = try first.periods.map { try $0.total.total }
         precondition(totals == [800, 1030])
         precondition(first.periods.map { $0.name } == ["今日", "当前周额度"])
@@ -696,6 +739,11 @@ extension CodexTokenUsageReader {
         let afterReset = try reader.read(now: cycle.end, timeZone: zone, weeklyRange: nextCycle)
         let afterResetTokens = try afterReset.periods[1].total.total
         precondition(afterResetTokens == 440, "The request at reset belongs to the next cycle; future requests are excluded")
+        let withPrevious = try reader.read(now: cycle.end, timeZone: zone, weeklyRange: nextCycle,
+                                           previousWeeklyRange: cycle, range: cycle)
+        let previousTokens = try withPrevious.periods[2].total.total
+        precondition(withPrevious.periods[2].name == "上一轮额度" && previousTokens == 1580)
+        precondition(!withPrevious.periods[2].isDateQuery && withPrevious.periods[3].isDateQuery)
         let expired = try reader.read(now: cycle.end, timeZone: zone, weeklyRange: cycle)
         precondition(expired.periods.count == 1)
         try FileManager.default.removeItem(at: boundaryFile)
@@ -712,6 +760,21 @@ extension CodexTokenUsageReader {
         let incompleteTotal = try incomplete.periods[0].total.total
         precondition(incomplete.skippedEvents == 1 && incompleteTotal == 800)
         precondition(!CodexTokenAmounts(input: 10, cached: 11).valid)
+        let badQuotaRoot = root.appendingPathComponent("bad-quota")
+        let badQuotaSessions = badQuotaRoot.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: badQuotaSessions, withIntermediateDirectories: true)
+        var badQuota = try JSONSerialization.jsonObject(with: event("2026-11-01T03:00:00Z", input: 100, output: 10, cumulative: 100)) as! [String: Any]
+        var badPayload = badQuota["payload"] as! [String: Any]
+        badPayload["rate_limits"] = ["primary": "invalid"]
+        badQuota["payload"] = badPayload
+        var badData = try JSONSerialization.data(withJSONObject: badQuota)
+        badData.append(10)
+        try badData.write(to: badQuotaSessions.appendingPathComponent("bad.jsonl"))
+        let badQuotaReader = CodexTokenUsageReader(root: badQuotaRoot)
+        let goodUsage = try badQuotaReader.read(now: now, timeZone: zone)
+        let goodTokens = try goodUsage.periods[0].total.total
+        precondition(goodTokens == 110 && goodUsage.skippedEvents == 0 && badQuotaReader.historicalQuotaObservations().isEmpty,
+                     "Malformed historical quota must not discard valid token usage")
         do {
             _ = try CodexTokenAmounts(input: Int64.max).adding(CodexTokenAmounts(input: 1))
             preconditionFailure("Overflow must not crash or wrap the token count")

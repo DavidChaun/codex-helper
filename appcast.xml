@@ -3,6 +3,25 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.9</title>
+            <pubDate>Wed, 04 Nov 2026 19:44:10 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.9</link>
+            <sparkle:version>63</sparkle:version>
+            <sparkle:shortVersionString>1.9.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.9
+
+- 新增「上一轮额度」，保存最近一轮的周期边界和最后记录的已用比例，重启后可恢复；沿用「金额 → 模型／标准／Fast → token 分项」展示。
+- 首次从本机保留的官方额度记录恢复周期，识别中途变更的周重置时间，忽略一分钟内的秒级浮动。周期信息保存在各自本机，用量继续按已有 iCloud 设置合并去重；缺失历史无法补齐。
+- 日期查询后增加「清除日期查询」，可直接移除查询结果；不会删除原始用量、iCloud 数据或上一轮额度存档，查询范围与额度周期相同时也能独立清除。
+- 修正首次扫描后台日志时反复搬动缓冲区导致的耗时，按块整理剩余数据，并保留跨块记录、超长行处理与用量校验。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。金额仍为用量参考估算，未知计价按 $0；沿用现有 Sparkle 签名和自动更新通道。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.9/Codex-Helper-Swift-1.9.9.zip" length="2527451" type="application/octet-stream" sparkle:edSignature="T8oXbeczAwSz3QjzDrJaY+TWKjO401yJSxvjEUX97wxsHN9Q0mjfCswOEBRO6WggS5RQrBmbIUwsusxXqcZPBg=="/>
+        </item>
+        <item>
             <title>1.9.8</title>
             <pubDate>Wed, 04 Nov 2026 15:12:44 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.8</link>
