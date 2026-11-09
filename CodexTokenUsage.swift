@@ -130,6 +130,7 @@ enum CodexTokenPricing {
     static func dollars(_ amount: Decimal) -> String {
         var value = amount, rounded = Decimal()
         NSDecimalRound(&rounded, &value, 2, .plain)
+        if amount > 0 && rounded == 0 { return "<$0.01" }
         return rounded.formatted(.currency(code: "USD").locale(Locale(identifier: "en_US")))
     }
 }
@@ -267,6 +268,7 @@ final class CodexTokenUsageReader {
     private let root: URL
     private let responseTiming: CodexResponseTimingReader
     private let backgroundUsage: CodexBackgroundUsageReader?
+    private let openCodexUsage: OpenCodexUsageReader?
     private var files: [String: FileState] = [:]
     private var retainedSince: Date?
     private let decoder = JSONDecoder()
@@ -283,10 +285,12 @@ final class CodexTokenUsageReader {
     private let quotaMarker = Data("\"rate_limits\"".utf8)
     private let outputMarker = Data("\"response_item\"".utf8)
 
-    init(root: URL? = nil, backgroundLogs: URL? = nil) {
+    init(root: URL? = nil, backgroundLogs: URL? = nil, openCodexLog: URL? = nil) {
         self.root = root ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map {
             URL(fileURLWithPath: $0, isDirectory: true)
         } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        let usageLog = openCodexLog ?? (root == nil ? OpenCodexUsageReader.defaultLog : nil)
+        openCodexUsage = usageLog.map(OpenCodexUsageReader.init)
         responseTiming = CodexResponseTimingReader(root: self.root)
         let logs = backgroundLogs ?? (root == nil ? CodexBackgroundUsageReader.defaultDirectory : nil)
         backgroundUsage = logs.map { CodexBackgroundUsageReader(logRoot: $0, cache: root == nil ? CodexBackgroundUsageReader.defaultCache : nil) }
@@ -478,14 +482,17 @@ final class CodexTokenUsageReader {
         }
         files = files.filter { liveFiles.contains($0.key) }
         let background = backgroundUsage?.read()
-        guard foundDirectory || sync != nil || !(background?.records.isEmpty ?? true) else { throw CodexTokenUsageError.missingSessions }
+        let proxy = openCodexUsage?.read()
+        guard foundDirectory || sync != nil || !(background?.records.isEmpty ?? true)
+                || !(proxy?.records.isEmpty ?? true) else { throw CodexTokenUsageError.missingSessions }
         let local = files.values.flatMap(\.events).map { event in
             var event = event
             if let span = event.responseSpan { event.record.responseSeconds = responseTiming.seconds(for: span) }
             return event
         }
-        let raw = local.map(\.record) + (background?.records ?? [])
+        let raw = local.map(\.record) + (background?.records ?? []) + (proxy?.records ?? [])
         var warnings = Set(background?.warnings ?? [])
+        if proxy?.failed == true { warnings.insert("OpenCodex 用量日志暂时无法读取") }
         let shared = sync?.exchange(local: raw, selectedDevice: device, now: now)
         let records = shared?.records ?? CodexUsageRecord.merged(raw, warnings: &warnings)
         for record in records where record.occurredAt >= querySince.timeIntervalSince1970 && record.occurredAt <= now.timeIntervalSince1970 {
@@ -509,8 +516,158 @@ final class CodexTokenUsageReader {
     }
 }
 
+private final class OpenCodexUsageReader {
+    static let defaultLog: URL = {
+        let path = ProcessInfo.processInfo.environment["OPENCODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directory = path.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".opencodex")
+        return directory.appendingPathComponent("usage.jsonl")
+    }()
+
+    private struct Entry: Decodable {
+        let requestId: String
+        let timestamp: Int64
+        let durationMs: Int64?
+        let lastOutputMs: Int64?
+        let model: String
+        let resolvedModel: String?
+        let servedModel: String?
+        let usageStatus: String
+        let responseServiceTier: String?
+        let requestedServiceTier: String?
+        let configuredServiceTier: String?
+        let usage: Usage?
+
+        struct Usage: Decodable {
+            let inputTokens: Int64
+            let outputTokens: Int64
+            let cachedInputTokens: Int64?
+            let cacheReadInputTokens: Int64?
+            let cacheCreationInputTokens: Int64?
+            let reasoningOutputTokens: Int64?
+        }
+    }
+
+    private let log: URL
+    private let decoder = JSONDecoder()
+    private let iso = ISO8601DateFormatter()
+    private let since = ISO8601DateFormatter().date(from: "2026-11-09T00:00:00+08:00")!
+    private var records: [String: CodexUsageRecord] = [:]
+    private var inode: NSNumber?
+    private var offset = 0
+
+    init(log: URL) {
+        self.log = log
+        iso.formatOptions.insert(.withFractionalSeconds)
+    }
+
+    func read() -> (records: [CodexUsageRecord], failed: Bool) {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: log.path)
+            let fileID = attributes[.systemFileNumber] as? NSNumber
+            let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+            if inode != fileID || offset > size { offset = 0 }
+            inode = fileID
+            if size > offset {
+                let file = try FileHandle(forReadingFrom: log)
+                defer { try? file.close() }
+                try file.seek(toOffset: UInt64(offset))
+                let appended = try file.read(upToCount: size - offset) ?? Data()
+                if let last = appended.lastIndex(of: 10) {
+                    for line in appended[..<last].split(separator: 10) {
+                        guard line.range(of: Data("gpt-".utf8)) != nil,
+                              let entry = try? decoder.decode(Entry.self, from: line),
+                              entry.usageStatus == "reported", let usage = entry.usage,
+                              !entry.requestId.isEmpty, entry.requestId.utf8.count <= 256 else { continue }
+                        let model = entry.servedModel ?? entry.resolvedModel ?? entry.model
+                        guard model.hasPrefix("gpt-") else { continue }
+                        let start = Date(timeIntervalSince1970: Double(entry.timestamp) / 1000)
+                        guard start >= since, start <= Date() else { continue }
+                        let duration = max(0, min(entry.durationMs ?? 0, 86_400_000))
+                        let date = start.addingTimeInterval(Double(duration) / 1000)
+                        let responseSeconds = entry.lastOutputMs.flatMap {
+                            $0 > 0 && $0 <= duration ? Double($0) / 1000 : nil
+                        }
+                        let amounts = CodexTokenAmounts(input: usage.inputTokens,
+                            cached: usage.cacheReadInputTokens ?? usage.cachedInputTokens,
+                            cacheWrite: usage.cacheCreationInputTokens,
+                            output: usage.outputTokens, reasoning: usage.reasoningOutputTokens)
+                        guard amounts.valid, amounts.total > 0 else { continue }
+                        let tier = entry.responseServiceTier ?? entry.requestedServiceTier ?? entry.configuredServiceTier
+                        let response = "opencodex-backfill:" + CodexUsageRecord.digest(Data(entry.requestId.utf8))
+                        let key = CodexUsageRecord.digest(Data(("response:" + response).utf8))
+                        let record = CodexUsageRecord(timestamp: iso.string(from: date), occurredAt: date.timeIntervalSince1970,
+                            model: model, serviceTier: tier, cumulative: nil, amounts: amounts,
+                            responseSeconds: responseSeconds, requestKey: key, source: "opencodex")
+                        if record.valid { records[key] = record }
+                    }
+                    offset += last + 1
+                }
+            }
+            return (Array(records.values), false)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return (Array(records.values), false)
+        } catch {
+            return (Array(records.values), true)
+        }
+    }
+}
+
 extension CodexTokenUsageReader {
+    private static func testOpenCodexUsage() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let iso = ISO8601DateFormatter()
+        let date = iso.date(from: "2026-11-09T01:00:00Z")!
+        let now = date.addingTimeInterval(60)
+        let log = root.appendingPathComponent("usage.jsonl")
+        let usage = ["inputTokens": 100, "cachedInputTokens": 20, "cacheCreationInputTokens": 0,
+                     "outputTokens": 5, "reasoningOutputTokens": 1]
+        func row(_ id: String, _ model: String, _ seconds: Double) throws -> Data {
+            try JSONSerialization.data(withJSONObject: [
+                "requestId": id, "timestamp": Int((date.timeIntervalSince1970 + seconds) * 1000),
+                "durationMs": 1000, "lastOutputMs": id == "later" ? 1100 : 500,
+                "model": model, "usageStatus": "reported",
+                "responseServiceTier": "default", "usage": usage
+            ])
+        }
+        let reader = CodexTokenUsageReader(root: root, openCodexLog: log)
+        try (row("old", "gpt-6.1-sol", -40_000) + Data([10])
+            + row("other", "deepseek-v4.1-flash", 0) + Data([10])
+            + row("proxy", "gpt-6.1-sol", 0) + Data([10])
+            + row("later", "gpt-6.1-sol", 30)).write(to: log)
+        let first = try reader.read(now: now)
+        precondition(try! first.periods[0].total.total == 105)
+        let append = try FileHandle(forWritingTo: log)
+        try append.seekToEnd()
+        try append.write(contentsOf: Data([10]))
+        try append.close()
+        let second = try reader.read(now: now)
+        precondition(try! second.periods[0].total.total == 210)
+        let performance = second.periods[0].performance.values.first!
+        precondition(performance.requests == 2 && performance.samples == 1 && performance.average == 10)
+
+        let proxy = OpenCodexUsageReader(log: log).read().records.first { $0.occurredAt < date.timeIntervalSince1970 + 10 }!
+        var amounts = proxy.amounts
+        amounts.cacheWrite = nil
+        let original = CodexUsageRecord(timestamp: iso.string(from: date.addingTimeInterval(2)),
+            occurredAt: date.timeIntervalSince1970 + 2, model: proxy.model,
+            serviceTier: nil, cumulative: nil, amounts: amounts, source: "desktop:thread_title")
+        var warnings = Set<String>()
+        let merged = CodexUsageRecord.merged([original, proxy], warnings: &warnings)
+        precondition(merged.count == 1 && merged[0].amounts == proxy.amounts && merged[0].serviceTier == "default")
+        precondition(merged[0].responseSeconds == 0.5)
+        precondition(merged[0].aliases?.contains(original.id) == true && warnings.isEmpty)
+        var timedOriginal = original
+        timedOriginal.responseSeconds = 0.75
+        precondition(CodexUsageRecord.merged([timedOriginal, proxy], warnings: &warnings).first?.responseSeconds == 0.75)
+        let roundTrip = CodexUsageRecord.merged(merged + [original, proxy], warnings: &warnings)
+        precondition(roundTrip.count == 1 && roundTrip[0].amounts == proxy.amounts && warnings.isEmpty)
+    }
+
     static func selfTest() throws {
+        try testOpenCodexUsage()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessions = root.appendingPathComponent("sessions")
         let archived = root.appendingPathComponent("archived_sessions")
@@ -654,6 +811,7 @@ extension CodexTokenUsageReader {
         long.input = 300_000
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: long, serviceTier: "fast") == longParts.total * 2)
         precondition(CodexTokenPricing.dollars(0) == "$0.00")
+        precondition(CodexTokenPricing.dollars(Decimal(1485) / 1_000_000) == "<$0.01")
         precondition(CodexTokenPricing.dollars(Decimal(1005) / 1000) == "$1.01")
         var priceData = try line("turn_context", ["model": "gpt-6.1-sol"])
         priceData += try line("event_msg", ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]])

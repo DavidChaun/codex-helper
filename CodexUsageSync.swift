@@ -69,13 +69,18 @@ struct CodexUsageRecord: Codable, Equatable {
             if let key = record.requestKey ?? keys[record.id]?.first { return "request:" + key }
             return "event:" + record.id
         }
-        return groups.values.map { copies in
+        let exact = groups.values.map { copies in
             let native = copies.first { $0.source == "native" }
             let preferNative = native.map { original in copies.contains { $0.amounts != original.amounts } } ?? false
             let first = copies.min {
                 let left = ($0.source == "native") == preferNative ? 0 : 1
                 let right = ($1.source == "native") == preferNative ? 0 : 1
-                return left == right ? ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp) : left < right
+                if left != right { return left < right }
+                if $0.amounts.input == $1.amounts.input, $0.amounts.output == $1.amounts.output,
+                   $0.timestamp == $1.timestamp, ($0.amounts.uncached == nil) != ($1.amounts.uncached == nil) {
+                    return $0.amounts.uncached != nil
+                }
+                return $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
             }!
             if copies.count == 1 { return first }
             let models = Set(copies.map(\.model).filter { $0 != "未记录模型" && $0 != "未确认模型" })
@@ -92,7 +97,65 @@ struct CodexUsageRecord: Codable, Equatable {
                 serviceTier: tier, cumulative: first.cumulative, amounts: first.amounts, id: first.id,
                 responseSeconds: copies.compactMap(\.responseSeconds).max(), requestKey: key,
                 aliases: key == nil || aliases.isEmpty ? nil : Array(aliases.prefix(64)), source: first.source)
-        }.sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
+        }
+        let combined = exact.contains { $0.source == "opencodex" }
+            ? mergeOpenCodex(exact, warnings: &warnings) : exact
+        return combined.sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
+    }
+
+    private static func mergeOpenCodex(_ records: [CodexUsageRecord], warnings: inout Set<String>) -> [CodexUsageRecord] {
+        func signature(_ record: CodexUsageRecord) -> String {
+            "\(record.model)/\(record.amounts.input)/\(record.amounts.output)"
+        }
+        func compatible(_ lhs: Int64?, _ rhs: Int64?) -> Bool {
+            lhs == nil || rhs == nil || lhs == rhs
+        }
+        let native = Dictionary(grouping: records.indices.filter { records[$0].source != "opencodex" }) {
+            signature(records[$0])
+        }
+        var matches: [Int: [Int]] = [:]
+        var claims: [Int: Int] = [:]
+        for index in records.indices where records[index].source == "opencodex" {
+            let proxy = records[index]
+            // shortcut: OpenCodex 日志无上游响应 ID；能取得该 ID 时改为按 ID 匹配。
+            let candidates = (native[signature(proxy)] ?? []).filter {
+                let local = records[$0]
+                return abs(local.occurredAt - proxy.occurredAt) <= 15
+                    && compatible(local.amounts.cached, proxy.amounts.cached)
+                    && compatible(local.amounts.cacheWrite, proxy.amounts.cacheWrite)
+                    && compatible(local.amounts.reasoning, proxy.amounts.reasoning)
+            }
+            if !candidates.isEmpty { matches[index] = candidates }
+            for candidate in candidates { claims[candidate, default: 0] += 1 }
+        }
+
+        var updated = records
+        for (index, candidates) in matches {
+            guard candidates.count == 1, let target = candidates.first, claims[target] == 1 else {
+                warnings.insert("部分 OpenCodex 用量与 Codex 记录无法唯一匹配，已避免重复计费")
+                continue
+            }
+            let proxy = records[index]
+            let local = records[target]
+            var amounts = local.amounts
+            amounts.cached = amounts.cached ?? proxy.amounts.cached
+            amounts.cacheWrite = amounts.cacheWrite ?? proxy.amounts.cacheWrite
+            amounts.reasoning = amounts.reasoning ?? proxy.amounts.reasoning
+            guard amounts.valid else {
+                warnings.insert("部分 OpenCodex 用量的 Token 分项冲突，已保留 Codex 记录")
+                continue
+            }
+            let tier = local.serviceTier ?? proxy.serviceTier
+            var merged = CodexUsageRecord(timestamp: local.timestamp, occurredAt: local.occurredAt,
+                model: local.model, serviceTier: tier, cumulative: local.cumulative, amounts: amounts,
+                responseSeconds: local.responseSeconds ?? proxy.responseSeconds,
+                requestKey: local.requestKey ?? proxy.requestKey, source: local.source)
+            let aliases = Set([local.id, proxy.id] + (local.aliases ?? []) + (proxy.aliases ?? []))
+                .subtracting([merged.id]).sorted()
+            merged.aliases = Array(aliases.prefix(64))
+            updated[target] = merged
+        }
+        return updated.indices.filter { matches[$0] == nil }.map { updated[$0] }
     }
 }
 
