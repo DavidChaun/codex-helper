@@ -3,6 +3,24 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.10</title>
+            <pubDate>Mon, 09 Nov 2026 15:54:53 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.10</link>
+            <sparkle:version>64</sparkle:version>
+            <sparkle:shortVersionString>1.9.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.10
+
+- 自动将 11 月 9 日起 OpenCodex 报告的 GPT 用量合并到费用估算。能唯一匹配的原生记录只计一次，缺失的计价字段由 OpenCodex 补齐。
+- OpenCodex 请求缺少原生测速时，使用请求开始到最后一次输出的耗时计算 `tok/s avg`。
+- 金额大于零但按美分舍入为零时，显示 `<$0.01` 并保留模型行。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.10/Codex-Helper-Swift-1.9.10.zip" length="2670035" type="application/octet-stream" sparkle:edSignature="rHjuPiXKihjssr/WBOJF8z0XQydaesChIZrZgpuKCYsdUuQeU21iAtnEStstyyoo2SUdlNX6cnNevNaQlFMpCQ=="/>
+        </item>
+        <item>
             <title>1.9.9</title>
             <pubDate>Wed, 04 Nov 2026 19:44:10 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.9</link>
