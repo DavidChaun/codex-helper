@@ -82,6 +82,14 @@ struct CodeBuddyRequestIdentifiers {
     let parentSpanID: String
 }
 
+/// 搜索/抓取这类单次调用没有会话上下文，每次自成一个会话。
+enum WorkBuddyTelemetry {
+    static func identifiers(for context: WorkBuddyAccountContext, model: String?) -> CodeBuddyRequestIdentifiers {
+        var session = CodeBuddyConversationSession(callerID: nil)
+        return session.nextTurnIdentifiers(model: model ?? "agenttool")
+    }
+}
+
 private func workBuddyGunzip(_ data: Data) -> Data? {
     var stream = z_stream()
     guard inflateInit2_(&stream, 16 + MAX_WBITS, ZLIB_VERSION,

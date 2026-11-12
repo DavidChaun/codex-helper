@@ -126,13 +126,15 @@ final class WorkBuddyProxy {
 
     private let queue = DispatchQueue(label: "local.codex-helper.workbuddy.proxy", qos: .utility)
     private let client: WorkBuddyClient
+    private let searchClient: WorkBuddySearchClient
     private let traeClient: TraeClient
     private var listener: NWListener?
     private var routeState = ProxyRouteState()
     private(set) var isRunning = false
 
-    init(client: WorkBuddyClient, traeClient: TraeClient) {
+    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient, traeClient: TraeClient) {
         self.client = client
+        self.searchClient = searchClient
         self.traeClient = traeClient
     }
 
@@ -257,13 +259,32 @@ final class WorkBuddyProxy {
                 sendJSON(connection, ["object": "list", "data": try client.models().map(\.json), "has_more": false])
                 return
             }
+            // 直连 CodeBuddy 的 /agenttool/*：让没装 CLI 的 harness 也能用搜索/抓取。
+            if request.method == "POST", path == "/search" || path == "/fetch" {
+                guard let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+                    sendJSON(connection, status: 400, ["error": ["message": "Invalid JSON body", "type": "invalid_request_error"]])
+                    return
+                }
+                handleAgentTool(connection, path: path, body: body)
+                return
+            }
             guard request.method == "POST", path == "/chat/completions",
-                  let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+                  let parsedBody = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
+            // 可选：为不具备原生搜索能力的 harness 注入 WebSearch / WebFetch 工具，
+            // 并在模型调用后自动执行并续轮（客户端显式传 tools 时不注入）。
+            var body = parsedBody
+            let autoTools = (body.removeValue(forKey: "workbuddy_auto_tools") as? Bool)
+                ?? (ProcessInfo.processInfo.environment["CODEX_HELPER_AUTO_TOOLS"] == "1")
+            if autoTools { injectSearchTools(&body) }
             let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
             let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
+            if autoTools {
+                chatWithAutoTools(connection, body, debug: debug)
+                return
+            }
             chat(connection, body, debug: debug) {
                 self.client.chat(body, debug: debug, callerID: callerID,
                                  onStart: $0, onData: $1, completion: $2)
@@ -271,6 +292,167 @@ final class WorkBuddyProxy {
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
+    }
+
+    // MARK: - 原生搜索工具
+
+    private static let searchToolNames: Set<String> = ["WebSearch", "WebFetch"]
+    /// 自动续轮上限，避免模型反复调用搜索导致无限循环。
+    private static let maxAutoToolRounds = 4
+
+    private func handleAgentTool(_ connection: NWConnection, path: String, body: [String: Any]) {
+        do {
+            if path == "/search" {
+                let outcome = try searchClient.search(body, model: body["model_name"] as? String)
+                sendJSON(connection, [
+                    "provider": outcome.provider,
+                    "results": outcome.results.map { hit -> [String: Any] in
+                        var value: [String: Any] = ["title": hit.title, "url": hit.url, "snippet": hit.snippet]
+                        if let site = hit.site { value["site"] = site }
+                        if let favicon = hit.favicon { value["favicon"] = favicon }
+                        return value
+                    },
+                    "total_results": outcome.totalResults,
+                    "response_time_ms": outcome.responseTimeMs
+                ])
+            } else {
+                let outcome = try searchClient.fetch(body, model: body["model_name"] as? String)
+                sendJSON(connection, ["url": outcome.url, "content_type": outcome.contentType,
+                                      "content": outcome.content])
+            }
+        } catch {
+            sendJSON(connection, status: 502,
+                     ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
+        }
+    }
+
+    /// 只补客户端没有的工具，绝不覆盖调用方自带的定义。
+    private func injectSearchTools(_ body: inout [String: Any]) {
+        var tools = body["tools"] as? [[String: Any]] ?? []
+        let existing = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        let missing = WorkBuddySearchClient.toolDefinitions.filter {
+            guard let name = ($0["function"] as? [String: Any])?["name"] as? String else { return false }
+            return !existing.contains(name)
+        }
+        guard !missing.isEmpty else { return }
+        tools.append(contentsOf: missing)
+        body["tools"] = tools
+    }
+
+    /// 客户端没开启搜索能力时，代理替它执行 WebSearch/WebFetch 并把结果续回模型。
+    /// 只在 autoTools 打开时走这条路径；SSE 一旦开始输出就不再续轮。
+    private func chatWithAutoTools(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?) {
+        let wantsStream = chatWantsStream(body)
+        var working = body
+        working.removeValue(forKey: "workbuddy_auto_tools")
+
+        func run(round: Int) {
+            let collector = ChatCompletionCollector(model: working["model"] as? String ?? "unknown")
+            self.client.chat(working, debug: debug, callerID: nil, onStart: {}, onData: { collector.consume($0) }) { error in
+                if let error {
+                    self.sendJSON(connection, status: 502,
+                                  ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
+                    return
+                }
+                guard let result = collector.result() else {
+                    self.sendJSON(connection, status: 502,
+                                  ["error": ["message": "Empty upstream response", "type": "upstream_error"]])
+                    return
+                }
+                let message = ((result["choices"] as? [[String: Any]])?.first?["message"]) as? [String: Any] ?? [:]
+                let calls = (message["tool_calls"] as? [[String: Any]]) ?? []
+                let searchCalls = calls.filter {
+                    guard let name = (($0["function"] as? [String: Any])?["name"] as? String) else { return false }
+                    return Self.searchToolNames.contains(name)
+                }
+                // 没有搜索调用、已达上限、或混有其它工具时，原样返回这一轮。
+                guard !searchCalls.isEmpty, round < Self.maxAutoToolRounds, searchCalls.count == calls.count else {
+                    if wantsStream {
+                        self.streamCollected(connection, result: result, model: working["model"] as? String ?? "unknown")
+                    } else {
+                        self.sendJSON(connection, result)
+                    }
+                    return
+                }
+
+                var history = working["messages"] as? [[String: Any]] ?? []
+                history.append(message)
+                for call in searchCalls {
+                    let callID = call["id"] as? String ?? ""
+                    let function = call["function"] as? [String: Any] ?? [:]
+                    let name = function["name"] as? String ?? ""
+                    let rawArguments = function["arguments"] as? String ?? "{}"
+                    history.append(["role": "tool", "tool_call_id": callID,
+                                    "content": self.executeSearchTool(name: name, rawArguments: rawArguments)])
+                }
+                working["messages"] = history
+                run(round: round + 1)
+            }
+        }
+        run(round: 0)
+    }
+
+    private func executeSearchTool(name: String, rawArguments: String) -> String {
+        guard let data = rawArguments.data(using: .utf8),
+              let arguments = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "Error: tool arguments are not valid JSON."
+        }
+        do {
+            if name == "WebSearch" {
+                let outcome = try searchClient.search(arguments)
+                guard !outcome.results.isEmpty else {
+                    return "No search results found for query: \"\(arguments["query"] as? String ?? "")\""
+                }
+                var text = "# Search Results for \"\(arguments["query"] as? String ?? "")\"\n\n"
+                for (index, hit) in outcome.results.enumerated() {
+                    text += "## \(index + 1). [\(hit.title)](\(hit.url))\n\(hit.snippet)\n\n**URL:** \(hit.url)\n\n---\n\n"
+                }
+                text += "*Found \(outcome.results.count) result\(outcome.results.count == 1 ? "" : "s") • Provider: \(outcome.provider) • Search performed on \(Self.todayString())*"
+                return text
+            }
+            let outcome = try searchClient.fetch(arguments)
+            return outcome.content
+        } catch {
+            return "Error: \(error.localizedDescription)"
+        }
+    }
+
+    private static func todayString() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }
+
+    /// 把已经聚合好的完整结果按 SSE 分块吐给调用方（自动续轮是内部多轮，客户端只看到一轮）。
+    private func streamCollected(_ connection: NWConnection, result: [String: Any], model: String) {
+        let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        connection.send(content: Data(header.utf8), completion: .idempotent)
+        let choice = (result["choices"] as? [[String: Any]])?.first
+        let message = (choice?["message"] as? [String: Any]) ?? [:]
+        let base: [String: Any] = ["id": result["id"] ?? "chatcmpl-auto",
+                                   "object": "chat.completion.chunk",
+                                   "created": result["created"] ?? Int(Date().timeIntervalSince1970),
+                                   "model": result["model"] ?? model]
+        if let content = message["content"] as? String, !content.isEmpty {
+            var frame = base
+            frame["choices"] = [["index": 0, "delta": ["content": content], "finish_reason": NSNull()]]
+            connection.send(content: Self.httpChunk(Data(("data: " + (Self.jsonString(frame) ?? "{}") + "\n\n").utf8)),
+                            completion: .idempotent)
+        }
+        var final = base
+        final["choices"] = [["index": 0, "delta": [:], "finish_reason": choice?["finish_reason"] ?? "stop"]]
+        if let usage = result["usage"] { final["usage"] = usage }
+        connection.send(content: Self.httpChunk(Data(("data: " + (Self.jsonString(final) ?? "{}") + "\n\n").utf8)),
+                        completion: .idempotent)
+        connection.send(content: Data("0\r\n\r\n".utf8),
+                        completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    private static func jsonString(_ value: Any) -> String? {
+        guard let data = try? workBuddyJSONData(value) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private func handleTrae(_ connection: NWConnection, _ request: ProxyRequest) {
