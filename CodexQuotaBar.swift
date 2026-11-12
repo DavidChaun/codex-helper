@@ -432,7 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     lazy var workBuddyClient = WorkBuddyClient(accounts: workBuddyAccounts)
     let traeAccounts = TraeAccountPool()
     lazy var traeClient = TraeClient(accounts: traeAccounts)
-    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, traeClient: traeClient)
+    lazy var workBuddySearchClient = WorkBuddySearchClient(accounts: workBuddyAccounts)
+    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient, traeClient: traeClient)
     var status: NSStatusItem!
     var quota: Quota?
     var updated: Date?
@@ -1820,6 +1821,7 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(workBuddyRotationCredits(previousBalance: 2440, currentBalance: 2500, accumulated: 45) == 45)
     WorkBuddyClient.selfTest()
     WorkBuddyAccountPool.selfTest()
+    WorkBuddySearchClient.selfTest()
     WorkBuddyProxy.selfTest()
     try ProxyDebugLog.selfTest()
     TraeClient.selfTest()
@@ -1854,7 +1856,7 @@ if CommandLine.arguments.contains("--self-test") {
         let accounts = WorkBuddyAccountPool()
         let client = WorkBuddyClient(accounts: accounts)
         let traeAccounts = TraeAccountPool()
-        let proxy = WorkBuddyProxy(client: client, traeClient: TraeClient(accounts: traeAccounts))
+        let proxy = WorkBuddyProxy(client: client, searchClient: WorkBuddySearchClient(accounts: accounts), traeClient: TraeClient(accounts: traeAccounts))
         // 由 set* 决定是否真的监听：两个路由都关时不应占用端口。
         try proxy.setWorkBuddyRunning(ProcessInfo.processInfo.environment["CODEX_HELPER_WORKBUDDY"] != "0")
         try proxy.setTraeRunning(ProcessInfo.processInfo.environment["CODEX_HELPER_TRAE"] != "0")

@@ -9,7 +9,7 @@ mkdir -p ".build/swift-cache"
 swiftc -swift-version 5 -target arm64-apple-macosx15.0 -module-cache-path ".build/swift-cache" -F Vendor/Sparkle \
   -framework AppKit -framework Network -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  CodexQuotaBar.swift CodexQuotaHistory.swift CodexTokenUsage.swift CodexUsageSync.swift CodexResponseTiming.swift CodexBackgroundUsage.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddyProxy.swift ProxyDebugLog.swift TraeClient.swift TraeAccountPool.swift -o ".build/CodexQuotaBar"
+  CodexQuotaBar.swift CodexQuotaHistory.swift CodexTokenUsage.swift CodexUsageSync.swift CodexResponseTiming.swift CodexBackgroundUsage.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddySearch.swift WorkBuddyProxy.swift ProxyDebugLog.swift TraeClient.swift TraeAccountPool.swift -o ".build/CodexQuotaBar"
 cp ".build/CodexQuotaBar" "$app/Contents/MacOS/CodexQuotaBar"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 ditto Vendor/Sparkle/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"
