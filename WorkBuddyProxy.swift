@@ -51,7 +51,7 @@ private final class ChatCompletionCollector {
     private var finishReason: String?
     private var usage: [String: Any]?
     private var sawChoice = false
-    private var sawDone = false
+    private(set) var sawDone = false
     private(set) var errorMessage: String?
 
     init(model: String) { self.model = model }
@@ -274,7 +274,7 @@ final class WorkBuddyProxy {
                 return
             }
             // 可选：为不具备原生搜索能力的 harness 注入 WebSearch / WebFetch 工具，
-            // 并在模型调用后自动执行并续轮（客户端显式传 tools 时不注入）。
+            // 只追加缺失的工具，并自动执行这些工具。
             var body = parsedBody
             // P2b：服务端搜索校验在两条路径之前统一执行，自动工具不能绕过。
             if let parameter = unsupportedSearchParameter(body) {
@@ -288,12 +288,12 @@ final class WorkBuddyProxy {
             let injected = autoTools ? injectSearchTools(&body) : []
             let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
             let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
-            if autoTools {
+            if !injected.isEmpty {
                 chatWithAutoTools(connection, body, injectedTools: injected, callerID: callerID, debug: debug)
                 return
             }
             chat(connection, body, debug: debug) {
-                self.client.chat(body, debug: debug, callerID: callerID,
+                self.client.chat(body, debug: debug,
                                  session: CodeBuddyConversationSession(callerID: callerID),
                                  onStart: $0, onData: $1, completion: $2)
             }
@@ -304,7 +304,6 @@ final class WorkBuddyProxy {
 
     // MARK: - 原生搜索工具
 
-    private static let searchToolNames: Set<String> = ["WebSearch", "WebFetch"]
     static let unsupportedSearchMessage = "WorkBuddy / Trae 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
     /// 自动续轮上限，避免模型反复调用搜索导致无限循环。
     private static let maxAutoToolRounds = 4
@@ -312,7 +311,7 @@ final class WorkBuddyProxy {
     private func handleAgentTool(_ connection: NWConnection, path: String, body: [String: Any]) {
         do {
             if path == "/search" {
-                let outcome = try searchClient.search(body, model: body["model_name"] as? String)
+                let outcome = try searchClient.search(body)
                 sendJSON(connection, [
                     "provider": outcome.provider,
                     "results": outcome.results.map { hit -> [String: Any] in
@@ -352,27 +351,34 @@ final class WorkBuddyProxy {
     }
 
     /// 客户端没开启搜索能力时，代理替它执行 WebSearch/WebFetch 并把结果续回模型。
-    /// 只在 autoTools 打开时走这条路径；SSE 一旦开始输出就不再续轮。
+    /// 缓存每轮 SSE，只向客户端回放最后一轮的事件。
     private func chatWithAutoTools(_ connection: NWConnection, _ body: [String: Any],
                                    injectedTools: Set<String>, callerID: String?, debug: ProxyDebugLog?) {
         let wantsStream = chatWantsStream(body)
         var working = body
-        working.removeValue(forKey: "workbuddy_auto_tools")
         // 一个代理请求 = 一个 CodeBuddy 会话：所有轮次与重试共用同一组关联 ID。
         let session = CodeBuddyConversationSession(callerID: callerID)
 
         func run(round: Int) {
             let collector = ChatCompletionCollector(model: working["model"] as? String ?? "unknown")
-            self.client.chat(working, debug: debug, session: session,
-                             onStart: {}, onData: { collector.consume($0) }) { error in
+            var replay = Data()
+            self.client.chat(working, debug: debug, session: session, onStart: {}, onData: { data in
+                debug?.observe(data)
+                collector.consume(data)
+                if wantsStream { replay.append(data) }
+            }) { error in
                 if let error {
+                    debug?.finish(error)
                     self.sendJSON(connection, status: 502,
                                   ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
                     return
                 }
                 guard let result = collector.result() else {
+                    let message = collector.errorMessage ?? "Empty upstream response"
+                    debug?.finish(NSError(domain: "CodexHelper.Proxy", code: 502,
+                                          userInfo: [NSLocalizedDescriptionKey: message]))
                     self.sendJSON(connection, status: 502,
-                                  ["error": ["message": "Empty upstream response", "type": "upstream_error"]])
+                                  ["error": ["message": message, "type": "upstream_error"]])
                     return
                 }
                 let message = ((result["choices"] as? [[String: Any]])?.first?["message"]) as? [String: Any] ?? [:]
@@ -384,8 +390,17 @@ final class WorkBuddyProxy {
                 }
                 // 没有可执行的调用、已达上限、或混有调用方工具时，整轮交还客户端。
                 guard !ownedCalls.isEmpty, round < Self.maxAutoToolRounds, ownedCalls.count == calls.count else {
-                    self.sendFinalTurn(connection, result: result, wantsStream: wantsStream,
-                                       model: working["model"] as? String ?? "unknown")
+                    debug?.finish(nil)
+                    if wantsStream {
+                        if !collector.sawDone { replay.append(Data("data: [DONE]\n\n".utf8)) }
+                        self.stream(connection) { start, send, done in
+                            start()
+                            send(replay)
+                            done(nil)
+                        }
+                    } else {
+                        self.sendJSON(connection, result)
+                    }
                     return
                 }
 
@@ -404,17 +419,6 @@ final class WorkBuddyProxy {
             }
         }
         run(round: 0)
-    }
-
-    /// 终止一轮并把结果交还客户端。流式下必须完整回放 tool_calls，
-    /// 否则客户端拿不到要执行的工具；同时补上 [DONE]。
-    private func sendFinalTurn(_ connection: NWConnection, result: [String: Any],
-                               wantsStream: Bool, model: String) {
-        if wantsStream {
-            streamCollected(connection, result: result, model: model)
-        } else {
-            sendJSON(connection, result)
-        }
     }
 
     private func executeSearchTool(name: String, rawArguments: String) -> String {
@@ -448,22 +452,6 @@ final class WorkBuddyProxy {
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date())
-    }
-
-    /// 把已经聚合好的完整结果按 SSE 分块吐给调用方（自动续轮是内部多轮，客户端只看到一轮）。
-    private func streamCollected(_ connection: NWConnection, result: [String: Any], model: String) {
-        let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(header.utf8), completion: .idempotent)
-        for frame in Self.streamReplayFrames(for: result, model: model) {
-            connection.send(content: Self.httpChunk(Data(frame.utf8)), completion: .idempotent)
-        }
-        connection.send(content: Data("0\r\n\r\n".utf8),
-                        completion: .contentProcessed { _ in connection.cancel() })
-    }
-
-    private static func jsonString(_ value: Any) -> String? {
-        guard let data = try? workBuddyJSONData(value) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     private func handleTrae(_ connection: NWConnection, _ request: ProxyRequest) {
@@ -669,21 +657,6 @@ final class WorkBuddyProxy {
         precondition(unsupportedSearchParameter(["tools": [["type": "web_search"]]]) == "tools[0].type")
         // 普通 function 形式的 WebSearch（CodeBuddy 的实际做法）必须放行。
         precondition(unsupportedSearchParameter(["tools": WorkBuddySearchClient.toolDefinitions]) == nil)
-
-        // P1a：流式回放必须带上 tool_calls 和 [DONE]。
-        let replay = streamReplayFrames(for: [
-            "id": "x", "created": 1, "model": "m",
-            "choices": [["index": 0, "finish_reason": "tool_calls",
-                         "message": ["role": "assistant", "content": NSNull(),
-                                     "tool_calls": [["id": "c1", "type": "function",
-                                                     "function": ["name": "local_lookup",
-                                                                  "arguments": "{\"a\":1}"]]]]]]
-        ], model: "m")
-        precondition(replay.contains { $0.contains("\"tool_calls\"") && $0.contains("local_lookup") },
-                     "流式回放必须包含 tool_calls")
-        precondition(replay.last?.contains("[DONE]") == true, "流式回放必须以 [DONE] 结束")
-        precondition(replay.contains { $0.contains("\"arguments\":\"{\\\"a\\\":1}\"") },
-                     "工具参数必须原样回放为字符串")
     }
 
     /// 可脱离网络断言的注入逻辑：只返回真正追加的工具名。
@@ -695,48 +668,6 @@ final class WorkBuddyProxy {
             names.insert(name)
         }
         return names
-    }
-
-    /// 把一轮结果渲染成 SSE 帧（不含 HTTP 头），供流式回放与断言共用。
-    static func streamReplayFrames(for result: [String: Any], model: String) -> [String] {
-        var frames: [String] = []
-        let choice = (result["choices"] as? [[String: Any]])?.first
-        let message = (choice?["message"] as? [String: Any]) ?? [:]
-        let base: [String: Any] = ["id": result["id"] ?? "chatcmpl-auto",
-                                   "object": "chat.completion.chunk",
-                                   "created": result["created"] ?? 0,
-                                   "model": result["model"] ?? model]
-        if let content = message["content"] as? String, !content.isEmpty {
-            var frame = base
-            frame["choices"] = [["index": 0, "delta": ["content": content], "finish_reason": NSNull()]]
-            frames.append("data: " + (jsonString(frame) ?? "{}") + "\n\n")
-        }
-        if let calls = message["tool_calls"] as? [[String: Any]], !calls.isEmpty {
-            let deltas = calls.enumerated().map { index, call -> [String: Any] in
-                var delta: [String: Any] = ["index": index]
-                if let id = call["id"] { delta["id"] = id }
-                if let type = call["type"] { delta["type"] = type }
-                if let function = call["function"] as? [String: Any] {
-                    var f: [String: Any] = [:]
-                    if let name = function["name"] { f["name"] = name }
-                    if let arguments = function["arguments"] {
-                        f["arguments"] = arguments is String ? arguments : (jsonString(arguments) ?? "{}")
-                    }
-                    delta["function"] = f
-                }
-                return delta
-            }
-            var frame = base
-            frame["choices"] = [["index": 0, "delta": ["role": "assistant", "tool_calls": deltas],
-                                "finish_reason": NSNull()]]
-            frames.append("data: " + (jsonString(frame) ?? "{}") + "\n\n")
-        }
-        var final = base
-        final["choices"] = [["index": 0, "delta": [:], "finish_reason": choice?["finish_reason"] ?? "stop"]]
-        if let usage = result["usage"] { final["usage"] = usage }
-        frames.append("data: " + (jsonString(final) ?? "{}") + "\n\n")
-        frames.append("data: [DONE]\n\n")
-        return frames
     }
 }
 

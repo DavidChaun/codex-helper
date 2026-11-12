@@ -28,17 +28,8 @@
 - 启用 WorkBuddy 功能后，可在菜单中启动 `127.0.0.1:58100` 的 Swift Chat Completions 代理。WorkBuddy 图形界面无需运行，但 `/Applications/WorkBuddy.app` 必须已安装且当前账户已登录。
 - 代理提供 `/health`、`/workbuddy/v1/models`、`/workbuddy/v1/chat/completions`，WorkBuddy 的本机 API Key 为 `workbuddy-local`。OpenCodex 的 `workbuddy` provider 使用 `openai-chat` adapter，并指向 `http://127.0.0.1:58100/workbuddy/v1`。旧的无前缀 `/v1` 别名已删除，升级后需重新点击「配置 / 刷新 WorkBuddy 代理」写入新地址。
 - 代理按 `workbuddy-cliproxy` 的实现调用 WorkBuddy `/v2/chat/completions`，上游保持强制流式；客户端 `stream: true` 返回 SSE，`stream: false` 或省略时返回标准 Chat Completion JSON，方便接入其他软件。代理还会替换两句上游拦截模板，并将 hy3 系列固定为 `reasoning_effort=high`。
-- 模型请求按 **CodeBuddy CLI 2.183.0 实测头部**逐项复刻（抓包对照见 `codebuddy-request-parity.md`）：`X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID`、`X-Root-Request-ID` 四件套按会话生成（ULID，同一 chat 内 root 不变，重试与换号沿用同一会话）；`X-Agent-Intent/Runtime/Purpose/Type`、`X-Private-Data`、`x-codebuddy-request`、`x-stainless-*` 六项与 `traceparent`/`b3`/`X-B3-*`/`X-Trace-ID`/`baggage` 一并发送。调用方传入 32 位十六进制 `X-Request-ID` 时直接作为 trace id，否则随机生成。请求体补齐 `cache_retention: "long"`、`reasoning_summary: "auto"`、`stream_options.include_usage` 与 `extra_vars.harnessMetadata`（调用方显式给出的值不覆盖）。
-- 与真实 CLI 的两处**反向偏差已收敛**：模型请求不再发送 `Origin`/`Referer`（真实 CLI 是 Node 进程，不发浏览器头），也不再在每个模型请求里附带 `X-Refresh-Token`（真实客户端只在刷新接口发）。`User-Agent`/`X-IDE-Version` 从硬编码的 `2.63.2` 更新为 `2.183.0`；CLI 由 ACP Registry 自动升级后需同步修改 `WorkBuddyClient.swift` 的 `codeBuddyCLIVersion`。
-
-## 搜索与网页抓取（不依赖 CodeBuddy CLI）
-
-CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行时另开 HTTP**，走 `/agenttool/v1/search` 与 `/agenttool/v1/webfetch`。代理直连这两个端点，因此没装 CLI 的 harness 也能拿到同样的能力。两条路径与模型请求共用账号池、鉴权和 `product.json` 的 `endpoint`。
-
-- `POST /workbuddy/v1/search` — 入参同 CLI 的 `WebSearch`：`query`（≥2 字符）、`allowed_domains`、`blocked_domains`、`freshness`（`d1`–`d30` / `m1`–`m12` / `y1`–`y5`）；`blocked_domains` 会按 CLI 的规则折进查询串 `query (-site:a -site:b)`。返回 `{provider, results[], total_results, response_time_ms}`。
-- `POST /workbuddy/v1/fetch` — 入参 `url`、`prompt`；`http://` 自动升级为 `https://`，正文上限 100000 字符，超时 20 秒。返回 `{url, content_type, content}`（markdown）。
-- `POST /workbuddy/v1/chat/completions` 加 `"workbuddy_auto_tools": true`（或环境变量 `CODEX_HELPER_AUTO_TOOLS=1`）时，代理为缺少搜索能力的 harness 补上 `WebSearch`/`WebFetch` 两个工具定义（不覆盖调用方已有的同名工具），并在模型返回这两者的 `tool_calls` 后**自动执行、把结果续回模型**，最多 4 轮。客户端显式传了 `tools` 时只补缺失项；混有其它工具调用时原样返回那一轮，不吞掉调用方的工具。
-- **base URL 的边界**：`CODEBUDDY_BASE_URL` 只影响模型请求。搜索/抓取恒用 `product.json` 的 `endpoint`（实测确认：把 `CODEBUDDY_BASE_URL` 指向本地后，`/v2/chat/completions` 被接管而 `/agenttool/v1/search` 仍打到 `copilot.tencent.com`）。
+- 模型请求按 **CodeBuddy CLI 2.183.0 实测头部**逐项复刻（抓包对照见 `codebuddy-request-parity.md`）：`X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID`、`X-Root-Request-ID` 四件套按会话生成（会话 ID 为 UUIDv7，其余为不带连字符的 32 位十六进制；首轮 request ID 等于 root ID，自动续轮、重试和换号保持会话及 root 不变）；`X-Agent-Intent/Runtime/Purpose/Type`、`X-Private-Data`、`x-codebuddy-request`、`x-stainless-*` 六项与 `traceparent`/`b3`/`X-B3-*`/`X-Trace-ID`/`baggage` 一并发送。调用方传入 32 位十六进制 `X-Request-ID` 时直接作为 trace id，否则随机生成。请求体补齐 `cache_retention: "long"`、`reasoning_summary: "auto"`、`stream_options.include_usage` 与 `extra_vars.harnessMetadata`（调用方显式给出的值不覆盖）。
+- 与真实 CLI 的两处**反向偏差已收敛**：模型请求不再发送 `Origin`/`Referer`（真实 CLI 是 Node 进程，不发浏览器头），也不再在每个模型请求里附带 `X-Refresh-Token`（模型请求无需携带刷新凭据）。`User-Agent`/`X-IDE-Version` 从硬编码的 `2.63.2` 更新为 `2.183.0`；CLI 由 ACP Registry 自动升级后需同步修改 `WorkBuddyClient.swift` 的 `codeBuddyCLIVersion`。
 - 同一个 `127.0.0.1:58100` 监听同时提供 Trae：`GET /trae/v1/models`、`POST /trae/v1/chat/completions`，本机 API Key 为 `trae-local`，OpenCodex 的 `trae` provider 指向 `http://127.0.0.1:58100/trae/v1`。登录态从 Trae 账号池取用（见下节），模型表来自 `get_detail_param`，对话走 `llm_utils_chat`（`function=solo_work_lite`）并把 `output.response`/`reasoning_content`/`tool_calls` 转成 OpenAI 格式；客户端 `stream: true` 返回 SSE，`stream: false` 或省略时返回 Chat Completion JSON。Trae 图形界面无需运行，但必须已登录 `/Applications/TRAE SOLO CN.app`；登录态失效会由上游 401 暴露，需要在 Trae 内重新登录。该 `trae` provider 不会写 `max_tokens` 默认值，只转发请求里显式给定的值。
 - 两条路由各自独立开关：WorkBuddy 与 Trae 在自己的菜单区块分别显示 `Running` / `Stop`，并在各自「更多…」中提供默认勾选的「启用代理」。关闭其中一个只停用它的路由（该前缀返回 404），另一个照常服务；两个都关闭时才停掉 listener。路径不匹配任何前缀时一律 404，不会在两家 provider 之间回退。`/health` 始终可用，并回报两条路由的开关状态。
 - 共享代理的启动条件：WorkBuddy 功能开启且已装 CLI，或 Trae 功能开启且本机装了 `/Applications/TRAE SOLO CN.app` / 留有 Trae 登录态，两者满足其一即可。
@@ -50,15 +41,24 @@ CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行�
 
 ## 工具与搜索能力
 
-WorkBuddy 和 Trae 两条 Chat Completions 代理均支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。模型返回 `tool_calls` 后，必须由客户端或 MCP 服务执行搜索，再将结果作为工具消息回传；Codex Helper 本身不执行搜索，也不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
+WorkBuddy 和 Trae 两条 Chat Completions 代理均支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。默认由客户端或 MCP 服务执行模型返回的 `tool_calls`；WorkBuddy 可显式开启下方的自动工具。两条代理均不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
 
 两条代理都不支持服务端内置 `web_search` / `web_fetch`。请求的 `tools` 或 `tool_choice` 使用这些类型（含 `web_search_preview`、`web_search_20250305` 等下划线后缀变体），或传入非 null 的 `web_search_options` 时，统一在发送上游请求前返回 HTTP 400，错误 `code` 为 `unsupported_server_search`，`param` 指出不支持的字段。不会静默删除工具、忽略搜索配置或返回假成功；流式与非流式请求规则相同。需要搜索时，请关闭客户端的服务端内置搜索配置，改用客户端 / MCP 执行的普通 function 搜索工具。
+
+### WorkBuddy 原生搜索与网页抓取
+
+CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行时另开 HTTP**，走 `/agenttool/v1/search` 与 `/agenttool/v1/webfetch`。代理直连这两个端点，因此没装 CLI 的 harness 也能拿到同样的能力。Codex Helper 使用已有的 WorkBuddy 账号池和 `product.json` 的 `endpoint`，接入方无需另装 CodeBuddy CLI。
+
+- `POST /workbuddy/v1/search` — 入参同 CLI 的 `WebSearch`：`query`（≥2 字符）、`allowed_domains`、`blocked_domains`、`freshness`（`d1`–`d30` / `m1`–`m12` / `y1`–`y5`）；`blocked_domains` 会按 CLI 的规则折进查询串 `query (-site:a -site:b)`。返回 `{provider, results[], total_results, response_time_ms}`。
+- `POST /workbuddy/v1/fetch` — 入参 `url`、`prompt`；`http://` 自动升级为 `https://`，正文上限 100000 字符，超时 20 秒。返回 `{url, content_type, content}`（markdown）。
+- `POST /workbuddy/v1/chat/completions` 加 `"workbuddy_auto_tools": true`（或环境变量 `CODEX_HELPER_AUTO_TOOLS=1`）时，代理为缺少搜索能力的 harness 补上 `WebSearch`/`WebFetch` 两个工具定义（不覆盖调用方已有的同名工具），并在模型只调用代理本次注入的工具时**自动执行、把结果续回模型**，最多 4 轮。客户端显式传了 `tools` 时只补缺失项；混有其它工具调用时原样返回那一轮，不吞掉调用方的工具。
+- 搜索与抓取都使用 WorkBuddy 的 `product.json` 地址；`CODEBUDDY_BASE_URL` 是 CodeBuddy CLI 的模型请求设置。
 
 ## WorkBuddy 多账号行为
 
 - 在 WorkBuddy 切换并登录新账号后，选择「账号池 → 保存当前 WorkBuddy 登录账号」将其加入账号池。切换 WorkBuddy 当前登录不会退出或覆盖池中已有账号；新账号不会自动加入。
 - 菜单可手动指定优先账号。请求成功后，实际使用的账号会成为后续请求的优先账号。
-- 代理不是遇到任意 API 错误都切号。只有上游返回 HTTP 429/500，且错误包含「频率限制」「使用量已超出」或 `rate limit` 时，才会为该“账号 + 模型”记录冷却时间并尝试下一个账号。
+- 代理不是遇到任意 API 错误都切号。模型请求只有上游返回 HTTP 429/500，且错误包含「频率限制」「使用量已超出」或 `rate limit` 时，才会为该“账号 + 模型”记录冷却时间并尝试下一个账号。
 - HTTP 401 只刷新当前账号 Token 并重试一次；普通 HTTP 500、网络错误不会切号。所有账号均不可用时，错误原样返回。
 - SSE 已经开始输出后不会中途切换账号，避免同一条回答混入两个账号的状态。
 - 「每日自动签到」会依次检查账号池中的全部账号，每个账号每天最多自动尝试一次；单个账号失败不会阻断其他账号。手动「立即签到」只操作当前优先账号。

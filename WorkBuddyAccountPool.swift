@@ -154,11 +154,11 @@ final class WorkBuddyAccountPool {
         }
     }
 
-    func markSuccess(accountID: String, model: String) {
+    func markSuccess(accountID: String, model: String? = nil) {
         try? queue.sync {
             guard let index = configuration.accounts.firstIndex(where: { $0.id == accountID }) else { return }
             configuration.accounts[index].lastUsedAt = Date()
-            configuration.accounts[index].lastModel = model
+            if let model { configuration.accounts[index].lastModel = model }
             configuration.preferredAccountID = accountID
             try saveConfiguration()
         }

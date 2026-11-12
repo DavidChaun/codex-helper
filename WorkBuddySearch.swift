@@ -26,12 +26,6 @@ struct WorkBuddyFetchOutcome {
     let content: String
 }
 
-/// 账号级业务失败：换下一个账号继续尝试，而不是直接把错误抛给调用方。
-struct WorkBuddyAccountFailure: Error {
-    let message: String
-    let code: String
-}
-
 enum WorkBuddySearchError: Error, LocalizedError {
     case message(String)
     var errorDescription: String? {
@@ -64,7 +58,7 @@ final class WorkBuddySearchClient {
 
     // MARK: - 搜索
 
-    func search(_ arguments: [String: Any], model: String? = nil) throws -> WorkBuddySearchOutcome {
+    func search(_ arguments: [String: Any]) throws -> WorkBuddySearchOutcome {
         // 参数校验与 CLI 的 zod schema 保持一致。
         guard let rawQuery = arguments["query"] as? String else {
             throw WorkBuddySearchError.message("The 'query' parameter is required.")
@@ -83,7 +77,7 @@ final class WorkBuddySearchClient {
         if !allowed.isEmpty { body["allowed_domains"] = allowed }
         if let freshness, Self.isValidFreshness(freshness) { body["freshness"] = freshness }
 
-        let root = try post(Self.searchPath, body: body, timeout: Self.searchTimeout, model: model)
+        let root = try post(Self.searchPath, body: body, timeout: Self.searchTimeout)
         let results = (root["results"] as? [[String: Any]]) ?? []
         return WorkBuddySearchOutcome(
             provider: text(root["provider"]) ?? "",
@@ -133,7 +127,7 @@ final class WorkBuddySearchClient {
         ]
         if let model, !model.isEmpty { body["model_name"] = model }
 
-        let root = try post(Self.fetchPath, body: body, timeout: Self.fetchTimeout, model: model)
+        let root = try post(Self.fetchPath, body: body, timeout: Self.fetchTimeout)
         guard let content = root["content"] as? String, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw WorkBuddySearchError.message("No readable content found on the page.")
         }
@@ -144,7 +138,7 @@ final class WorkBuddySearchClient {
 
     // MARK: - 传输
 
-    private func post(_ path: String, body: [String: Any], timeout: TimeInterval, model: String?) throws -> [String: Any] {
+    private func post(_ path: String, body: [String: Any], timeout: TimeInterval) throws -> [String: Any] {
         guard let url = URL(string: endpoint + path) else {
             throw WorkBuddySearchError.message("WorkBuddy 搜索地址无效")
         }
@@ -152,7 +146,7 @@ final class WorkBuddySearchClient {
         // 与聊天链路共用账号池：优先账号优先，失败换下一个。
         for context in try accounts.contexts(for: nil) {
             do {
-                let request = try makeRequest(url: url, context: context, body: body, timeout: timeout, model: model)
+                let request = try makeRequest(url: url, context: context, body: body, timeout: timeout)
                 let (data, response) = try syncData(request, timeout: timeout + 5)
                 if response.statusCode == 401 {
                     lastError = WorkBuddySearchError.message("WorkBuddy 登录已失效，请在 WorkBuddy 内重新登录")
@@ -169,15 +163,11 @@ final class WorkBuddySearchClient {
                 }
                 // 业务失败不能算账号成功：先判定 code，再决定是否换号。
                 if let failure = Self.businessFailure(in: root) {
-                    throw WorkBuddyAccountFailure(message: failure.message, code: failure.code)
+                    lastError = WorkBuddySearchError.message(failure.message)
+                    continue
                 }
-                accounts.markSuccess(accountID: context.id, model: model ?? path)
+                accounts.markSuccess(accountID: context.id)
                 return root
-            } catch let failure as WorkBuddyAccountFailure {
-                lastError = WorkBuddySearchError.message(failure.message)
-                continue
-            } catch let error as WorkBuddySearchError {
-                lastError = error
             } catch {
                 lastError = error
             }
@@ -186,12 +176,12 @@ final class WorkBuddySearchClient {
     }
 
     private func makeRequest(url: URL, context: WorkBuddyAccountContext,
-                             body: [String: Any], timeout: TimeInterval, model: String?) throws -> URLRequest {
+                             body: [String: Any], timeout: TimeInterval) throws -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.httpBody = try workBuddyJSONData(body)
-        let ident = WorkBuddyTelemetry.identifiers(for: context, model: model)
+        let ident = WorkBuddyTelemetry.identifiers()
 
         // 与 CLI 的 search / webfetch 请求同一套头部（codebuddy.js performWebSearch 的 header 表）。
         request.setValue("application/json", forHTTPHeaderField: "Accept")

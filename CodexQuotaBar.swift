@@ -1177,8 +1177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             }
         }
         if service == "workbuddy" {
-            workBuddyClient.chat(request, session: CodeBuddyConversationSession(),
-                                 onStart: {}, onData: onData, completion: completion)
+            workBuddyClient.chat(request, onStart: {}, onData: onData, completion: completion)
         } else if service == "trae" {
             traeClient.chat(request, onStart: {}, onData: onData, completion: completion)
         }

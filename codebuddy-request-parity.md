@@ -39,6 +39,8 @@ X-Domain: www.codebuddy.cn
 X-Product: SaaS
 ```
 
+会话 ID 使用带连字符的 UUIDv7；其余 ID 使用去掉连字符的 32 位十六进制。首轮的 Conversation-Request-ID 与 Root-Request-ID 相同，会话 ID 独立生成。
+
 body 顶层字段：`model, messages, tools, temperature, max_tokens, stream,
 stream_options{include_usage}, reasoning_effort, verbosity, extra_vars,
 cache_retention, reasoning_summary`。
@@ -47,16 +49,16 @@ cache_retention, reasoning_summary`。
 \"stepIndex\":0,\"contextWindowId\":\"...\",\"agent\":{\"depth\":0}}",
 "initiator":"user","interactionType":"prompt"}`。
 
-## 差异清单
+## 与改造前代理的差异
 
-| # | 项 | CodeBuddy CLI | 本仓库现状 | 影响 |
+| # | 项 | CodeBuddy CLI | 改造前 | 影响 |
 |---|---|---|---|---|
 | 1 | `User-Agent` | `CLI/2.183.0 CodeBuddy/2.183.0` | 硬编码 `CLI/2.63.2 CodeBuddy/2.63.2` | 版本号与真实 CLI 差 120 个小版本，可能被网关按版本做能力/配额分流 |
 | 2 | 会话关联 ID | `X-Conversation-ID`、`-Message-ID`、`-Request-ID`、`X-Root-Request-ID` 四件套 | **完全缺失** | 网关据此串联同一会话、做上下文缓存与计费归属；缺失时每请求各自独立 |
 | 3 | `X-Agent-*` | `Intent/Runtime/Purpose/Type` 四项 | **完全缺失** | 网关按 intent 选择 system prompt 增强、按 runtime 统计客户端类型 |
 | 4 | 追踪头 | `traceparent`、`b3`、`X-B3-*`、`X-Trace-ID`、`baggage` | **完全缺失** | 服务端 trace 断链；`baggage` 里的 session 关联也丢失 |
 | 5 | SDK 指纹 | `x-stainless-*` 六项 | **完全缺失** | 客户端识别（Anthropic SDK 派生）消失，可能命中不同的兼容分支 |
-| 6 | `X-Request-ID` | ULID，与 Message-ID 同值 | **完全缺失** | 上游报错时无法定位；本仓库只在 *接收* 侧读取调用方的 `X-Request-ID` |
+| 6 | `X-Request-ID` | 32 位十六进制，与 Message-ID 同值 | **完全缺失** | 上游报错时无法定位；本仓库只在 *接收* 侧读取调用方的 `X-Request-ID` |
 | 7 | `x-codebuddy-request` | `1` | **完全缺失** | 网关轻量识别标记 |
 | 8 | `X-Private-Data` | `false` | **完全缺失** | 隐私数据通路开关的显式声明 |
 | 9 | `extra_vars` | 含 `harnessMetadata` / `initiator` / `interactionType` | **完全缺失** | 网关侧的调用链元数据与发起者归因 |
