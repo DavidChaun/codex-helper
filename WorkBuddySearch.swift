@@ -26,6 +26,12 @@ struct WorkBuddyFetchOutcome {
     let content: String
 }
 
+/// 账号级业务失败：换下一个账号继续尝试，而不是直接把错误抛给调用方。
+struct WorkBuddyAccountFailure: Error {
+    let message: String
+    let code: String
+}
+
 enum WorkBuddySearchError: Error, LocalizedError {
     case message(String)
     var errorDescription: String? {
@@ -78,9 +84,6 @@ final class WorkBuddySearchClient {
         if let freshness, Self.isValidFreshness(freshness) { body["freshness"] = freshness }
 
         let root = try post(Self.searchPath, body: body, timeout: Self.searchTimeout, model: model)
-        if let code = root["code"], !(code is NSNull), "\(code)" != "0" {
-            throw WorkBuddySearchError.message(text(root["msg"]) ?? "Web Search API returned error \(code)")
-        }
         let results = (root["results"] as? [[String: Any]]) ?? []
         return WorkBuddySearchOutcome(
             provider: text(root["provider"]) ?? "",
@@ -131,9 +134,6 @@ final class WorkBuddySearchClient {
         if let model, !model.isEmpty { body["model_name"] = model }
 
         let root = try post(Self.fetchPath, body: body, timeout: Self.fetchTimeout, model: model)
-        if let code = root["code"], !(code is NSNull), "\(code)" != "0" {
-            throw WorkBuddySearchError.message(text(root["msg"]) ?? "WebFetch API returned error \(code)")
-        }
         guard let content = root["content"] as? String, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw WorkBuddySearchError.message("No readable content found on the page.")
         }
@@ -167,8 +167,15 @@ final class WorkBuddySearchClient {
                 guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw WorkBuddySearchError.message("Search API 返回了非对象 JSON")
                 }
+                // 业务失败不能算账号成功：先判定 code，再决定是否换号。
+                if let failure = Self.businessFailure(in: root) {
+                    throw WorkBuddyAccountFailure(message: failure.message, code: failure.code)
+                }
                 accounts.markSuccess(accountID: context.id, model: model ?? path)
                 return root
+            } catch let failure as WorkBuddyAccountFailure {
+                lastError = WorkBuddySearchError.message(failure.message)
+                continue
             } catch let error as WorkBuddySearchError {
                 lastError = error
             } catch {
@@ -307,6 +314,15 @@ final class WorkBuddySearchClient {
 
     // MARK: - Self test
 
+    /// 业务结果判定：`code` 缺省或为 0 才算成功。抽出来是为了能脱离网络断言。
+    static func businessFailure(in root: [String: Any]) -> (message: String, code: String)? {
+        guard let code = root["code"], !(code is NSNull) else { return nil }
+        let text = "\(code)"
+        guard text != "0" else { return nil }
+        let message = (root["msg"] as? String) ?? "Search API error \(text)"
+        return (message, text)
+    }
+
     static func selfTest() {
         for valid in ["d", "d1", "d30", "m", "m12", "y", "y5"] {
             precondition(isValidFreshness(valid), "应接受 \(valid)")
@@ -326,5 +342,17 @@ final class WorkBuddySearchClient {
         }
         precondition((searchDefinition["function"] as! [String: Any])["name"] as? String == "WebSearch")
         precondition((fetchDefinition["function"] as! [String: Any])["name"] as? String == "WebFetch")
+
+        // P2c 回归：业务失败必须被识别，且不能当作账号成功。
+        precondition(businessFailure(in: ["code": 50001, "msg": "频率限制"])?.code == "50001")
+        precondition(businessFailure(in: ["code": "50001"])?.message == "Search API error 50001")
+        precondition(businessFailure(in: ["code": 0]) == nil, "code=0 是成功")
+        precondition(businessFailure(in: ["code": NSNull()]) == nil, "code=null 视为成功")
+        precondition(businessFailure(in: [:]) == nil, "无 code 字段视为成功")
+        // 真实成功响应里带 results，不应被判为失败。
+        let okRoot: [String: Any] = ["provider": "p", "results": [], "total_results": 0]
+        precondition(businessFailure(in: okRoot) == nil)
+        // 字符串 "0" 也是成功（网关偶尔以字符串返回）。
+        precondition(businessFailure(in: ["code": "0"]) == nil)
     }
 }

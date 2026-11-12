@@ -6,65 +6,84 @@ import zlib
 // 否则 User-Agent / X-IDE-Version 会落后于真实客户端。
 let codeBuddyCLIVersion = "2.183.0"
 
-/// CodeBuddy 的 ID 是 ULID（26 位 Crockford Base32，前 10 位为毫秒时间戳）。
-enum CodeBuddyULID {
-    private static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ".utf8)
+/// CodeBuddy 的 ID 是 48 位毫秒时间戳 + 80 位随机数的 32 位十六进制。
+/// `X-Conversation-ID` 用 UUID 分段形态（8-4-4-4-12），其余头用裸 32 位十六进制。
+/// 实测样本：01a1ce0d-345b-71d6-8fec-19708f5d4803 / 01a1ce0d35c673f8bc80661f9840da49
+enum CodeBuddyID {
     private static let lock = NSLock()
     private static var lastTimestamp: UInt64 = 0
     private static var lastRandom: UInt64 = 0
+    private static var lastRandomHigh: UInt64 = 0
 
+    /// 48 位时间戳 + 80 位随机，返回 32 位小写十六进制。
+    /// 80 位随机拆成 high(16) + low(64) 两段，避免用 UInt64 装不下而丢掉高 16 位。
     static func next() -> String {
         lock.lock()
         defer { lock.unlock() }
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        let now = UInt64(Date().timeIntervalSince1970 * 1000) & 0xFFFF_FFFF_FFFF
         if now > lastTimestamp {
             lastTimestamp = now
-            // 80 位随机数，与 ULID 规范一致；按时间单调递增避免同毫秒内乱序。
+            lastRandomHigh = UInt64.random(in: 0..<0x1_0000)
             lastRandom = UInt64.random(in: 0..<UInt64.max)
         } else {
-            lastRandom &+= 1
+            // 同毫秒内递增，低位溢出时进位到高位。
+            let (next, overflow) = lastRandom.addingReportingOverflow(1)
+            lastRandom = next
+            if overflow { lastRandomHigh = (lastRandomHigh &+ 1) & 0xFFFF }
         }
-        let random = lastRandom
-        var output = [UInt8](repeating: 0x30, count: 26)
-        var time = lastTimestamp
-        for index in stride(from: 9, through: 0, by: -1) {
-            output[index] = alphabet[Int(time & 0x1F)]
-            time >>= 5
-        }
-        var value = random
-        for index in stride(from: 25, through: 10, by: -1) {
-            output[index] = alphabet[Int(value & 0x1F)]
-            value >>= 5
-        }
-        return String(decoding: output, as: UTF8.self)
+        return hex(lastTimestamp, width: 12) + hex(lastRandomHigh, width: 4) + hex(lastRandom, width: 16)
+    }
+
+    /// 同一底层值按 8-4-4-4-12 分段，得到 36 位 UUID 形态。
+    static func uuidForm(_ value: String) -> String {
+        guard value.count == 32 else { return value }
+        let c = Array(value)
+        return String(c[0..<8]) + "-" + String(c[8..<12]) + "-" + String(c[12..<16]) + "-"
+            + String(c[16..<20]) + "-" + String(c[20..<32])
+    }
+
+    /// 复现抓包中首轮的关系：Conversation-Request-ID 与 Root-Request-ID 相同。
+    static func conversationAndRoot() -> (conversationID: String, rootRequestID: String) {
+        let raw = next()
+        return (uuidForm(raw), raw)
+    }
+
+    private static func hex(_ value: UInt64, width: Int) -> String {
+        let text = String(value, radix: 16)
+        return String(repeating: "0", count: max(0, width - text.count)) + text
     }
 }
 
 /// 一次代理调用（一次 chat）对应一个 CodeBuddy 会话；每个上游请求是它的一个轮次。
-struct CodeBuddyConversationSession {
+/// 用 class 是为了跨 `Task` 共享同一个可变轮次计数。
+final class CodeBuddyConversationSession {
     let conversationID: String
     let rootRequestID: String
     let traceID: String
     private(set) var turnIndex = 0
 
     init(callerID: String? = nil) {
-        conversationID = CodeBuddyULID.next()
-        rootRequestID = CodeBuddyULID.next()
+        let ids = CodeBuddyID.conversationAndRoot()
+        conversationID = ids.conversationID
+        rootRequestID = ids.rootRequestID
         traceID = (callerID.flatMap(Self.normalizedTraceID)) ?? Self.randomHex(count: 32)
     }
 
-    mutating func nextTurnIdentifiers(model: String) -> CodeBuddyRequestIdentifiers {
+    func nextTurnIdentifiers(model: String) -> CodeBuddyRequestIdentifiers {
         defer { turnIndex += 1 }
+        // 首轮的 Conversation-Request-ID 必须等于 Root-Request-ID（与抓包一致）。
+        let requestID = turnIndex == 0 ? rootRequestID : CodeBuddyID.next()
         return CodeBuddyRequestIdentifiers(
-            conversationID: conversationID, messageID: CodeBuddyULID.next(),
-            requestID: CodeBuddyULID.next(), rootRequestID: rootRequestID, traceID: traceID,
+            conversationID: conversationID, messageID: CodeBuddyID.next(),
+            requestID: requestID, rootRequestID: rootRequestID, traceID: traceID,
             spanID: Self.randomHex(count: 16), parentSpanID: Self.randomHex(count: 16))
     }
 
     /// 调用方传入的 `X-Request-ID` 可能是 UUID 或 W3C trace id，只有 32 位十六进制才能直接当 trace 用。
     static func normalizedTraceID(_ value: String) -> String? {
-        let hex = value.lowercased().filter { $0.isHexDigit }
-        return value.lowercased().count == 32 && hex.count == 32 ? hex : nil
+        let lower = value.lowercased()
+        let isHex = lower.count == 32 && lower.allSatisfy { $0.isHexDigit }
+        return isHex ? lower : nil
     }
 
     static func randomHex(count: Int) -> String {
@@ -85,7 +104,7 @@ struct CodeBuddyRequestIdentifiers {
 /// 搜索/抓取这类单次调用没有会话上下文，每次自成一个会话。
 enum WorkBuddyTelemetry {
     static func identifiers(for context: WorkBuddyAccountContext, model: String?) -> CodeBuddyRequestIdentifiers {
-        var session = CodeBuddyConversationSession(callerID: nil)
+        let session = CodeBuddyConversationSession(callerID: nil)
         return session.nextTurnIdentifiers(model: model ?? "agenttool")
     }
 }
@@ -217,17 +236,16 @@ final class WorkBuddyClient {
     }
 
     func chat(_ source: [String: Any], debug: ProxyDebugLog? = nil, callerID: String? = nil,
+              session: CodeBuddyConversationSession,
               onStart: @escaping () -> Void,
               onData: @escaping (Data) -> Void, completion: @escaping (Error?) -> Void) {
         Task {
             do {
                 let model = source["model"] as? String ?? "unknown"
-                // 一次调用 = 一个 CodeBuddy 会话；重试与换号沿用同一组关联 ID。
-                var session = CodeBuddyConversationSession(callerID: callerID)
                 var lastLimit: WorkBuddyRateLimit?
                 for context in try accounts.contexts(for: model) {
                     do {
-                        try await request(source, context: context, session: &session, retryAfterRefresh: true,
+                        try await request(source, context: context, session: session, retryAfterRefresh: true,
                                           debug: debug, onStart: onStart, onData: onData)
                         accounts.markSuccess(accountID: context.id, model: model)
                         completion(nil)
@@ -318,7 +336,7 @@ final class WorkBuddyClient {
         return context
     }
 
-    private func request(_ source: [String: Any], context: WorkBuddyAccountContext, session: inout CodeBuddyConversationSession,
+    private func request(_ source: [String: Any], context: WorkBuddyAccountContext, session: CodeBuddyConversationSession,
                          retryAfterRefresh: Bool, debug: ProxyDebugLog?,
                          onStart: @escaping () -> Void, onData: @escaping (Data) -> Void) async throws {
         // 上游固定流式；客户端要不要 JSON 由代理层聚合决定（见 WorkBuddyProxy.chat）。
@@ -336,7 +354,7 @@ final class WorkBuddyClient {
         debug?.upstream(status: response.statusCode)
         if response.statusCode == 401, retryAfterRefresh {
             let fresh = try refresh(context)
-            return try await self.request(source, context: fresh, session: &session, retryAfterRefresh: false,
+            return try await self.request(source, context: fresh, session: session, retryAfterRefresh: false,
                                           debug: debug, onStart: onStart, onData: onData)
         }
         guard (200..<300).contains(response.statusCode) else {
@@ -380,7 +398,7 @@ final class WorkBuddyClient {
         if extra["harnessMetadata"] == nil {
             let metadata: [String: Any] = [
                 "schemaVersion": 1, "harnessVersion": codeBuddyCLIVersion, "stepIndex": 0,
-                "contextWindowId": CodeBuddyULID.next(), "agent": ["depth": 0]
+                "contextWindowId": CodeBuddyID.uuidForm(CodeBuddyID.next()), "agent": ["depth": 0]
             ]
             if let data = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]),
                let json = String(data: data, encoding: .utf8) {
@@ -629,7 +647,7 @@ final class WorkBuddyClient {
         let second = client.upstreamBody(["model": "glm-5.3"])
         precondition((second["extra_vars"] as? [String: Any])?["harnessMetadata"] as? String != harnessJSON)
         // 会话关联 ID：同一会话内 root 不变、消息 ID 递增、trace 贯穿。
-        var session = CodeBuddyConversationSession(callerID: nil)
+        let session = CodeBuddyConversationSession(callerID: nil)
         let firstTurn = session.nextTurnIdentifiers(model: "glm-5.3")
         let secondTurn = session.nextTurnIdentifiers(model: "glm-5.3")
         precondition(firstTurn.conversationID == secondTurn.conversationID)
@@ -637,8 +655,25 @@ final class WorkBuddyClient {
         precondition(firstTurn.traceID == secondTurn.traceID)
         precondition(firstTurn.messageID != secondTurn.messageID)
         precondition(firstTurn.messageID != firstTurn.requestID)
-        precondition(firstTurn.conversationID.count == 26 && firstTurn.conversationID.allSatisfy { "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains($0) })
+        // 实测样本：X-Conversation-ID 是 8-4-4-4-12 的 UUID 形态，其余是裸 32 位十六进制。
+        precondition(firstTurn.conversationID.count == 36)
+        precondition(firstTurn.conversationID.filter { $0 == "-" }.count == 4)
+        precondition(firstTurn.conversationID.replacingOccurrences(of: "-", with: "").count == 32)
+        precondition(firstTurn.conversationID.allSatisfy { $0.isHexDigit || $0 == "-" })
+        for value in [firstTurn.messageID, firstTurn.requestID, firstTurn.rootRequestID] {
+            precondition(value.count == 32 && value.allSatisfy(\.isHexDigit))
+        }
+        // 首轮的 Conversation-Request-ID 必须等于 Root-Request-ID（与抓包一致）。
+        precondition(firstTurn.requestID == firstTurn.rootRequestID)
+        precondition(secondTurn.requestID != secondTurn.rootRequestID)
+        // 32 位十六进制恰好是 UUID 去掉连字符后的长度。
+        precondition(firstTurn.conversationID.replacingOccurrences(of: "-", with: "").count
+                     == firstTurn.rootRequestID.count)
         precondition(firstTurn.spanID.count == 16 && firstTurn.spanID.allSatisfy(\.isHexDigit))
+        // 80 位随机不能塌陷：尾部 4 位十六进制（高位随机）必须能取到非零。
+        let tails = Set((0..<32).map { _ in String(CodeBuddyID.next().suffix(4)) })
+        precondition(tails.count > 1 || tails.first != "0000", "随机数高位始终为 0：\(tails)")
+        precondition(tails.contains { $0 != "0000" }, "随机数高位始终为 0")
         // 调用方给的 32 位十六进制 request id 可直接作为 trace id；UUID 则退回随机。
         let hexCaller = String(repeating: "ab", count: 16)
         precondition(CodeBuddyConversationSession.normalizedTraceID(hexCaller) == hexCaller)
