@@ -262,9 +262,12 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body,
-                                            callerID: request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"])
-            chat(connection, body, debug: debug) { self.client.chat(body, debug: debug, onStart: $0, onData: $1, completion: $2) }
+            let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
+            let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
+            chat(connection, body, debug: debug) {
+                self.client.chat(body, debug: debug, callerID: callerID,
+                                 onStart: $0, onData: $1, completion: $2)
+            }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
         }
