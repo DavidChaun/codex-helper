@@ -3,6 +3,24 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.11</title>
+            <pubDate>Thu, 12 Nov 2026 13:41:52 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.11</link>
+            <sparkle:version>65</sparkle:version>
+            <sparkle:shortVersionString>1.9.11</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.11
+
+- WorkBuddy 代理更新模型请求格式，与 CodeBuddy CLI 2.183.0 对齐；同一请求的自动续轮和重试沿用会话与追踪 ID。
+- 新增原生网页搜索和抓取接口。接入方可在 Chat Completions 请求中显式开启自动搜索，代理只执行自己添加的工具。
+- 流式回退保留客户端工具调用、推理片段和用量；搜索账号回退保留聊天模型的轮换状态。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.11/Codex-Helper-Swift-1.9.11.zip" length="2742885" type="application/octet-stream" sparkle:edSignature="lFKsM3qOoWTewdHd8yZlG8Rtb0m2366cNbinIOu8V9tFzhtX5wr87uUjIIETRZPIwXarKI6Q+AGYZpcIRAJYBw=="/>
+        </item>
+        <item>
             <title>1.9.10</title>
             <pubDate>Mon, 09 Nov 2026 15:54:53 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.10</link>
