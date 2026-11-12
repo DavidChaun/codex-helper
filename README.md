@@ -51,7 +51,8 @@ CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行�
 
 - `POST /workbuddy/v1/search` — 入参同 CLI 的 `WebSearch`：`query`（≥2 字符）、`allowed_domains`、`blocked_domains`、`freshness`（`d1`–`d30` / `m1`–`m12` / `y1`–`y5`）；`blocked_domains` 会按 CLI 的规则折进查询串 `query (-site:a -site:b)`。返回 `{provider, results[], total_results, response_time_ms}`。
 - `POST /workbuddy/v1/fetch` — 入参 `url`、`prompt`；`http://` 自动升级为 `https://`，正文上限 100000 字符，超时 20 秒。返回 `{url, content_type, content}`（markdown）。
-- `POST /workbuddy/v1/chat/completions` 加 `"workbuddy_auto_tools": true`（或环境变量 `CODEX_HELPER_AUTO_TOOLS=1`）时，代理为缺少搜索能力的 harness 补上 `WebSearch`/`WebFetch` 两个工具定义（不覆盖调用方已有的同名工具），并在模型只调用代理本次注入的工具时**自动执行、把结果续回模型**，最多 4 轮。客户端显式传了 `tools` 时只补缺失项；混有其它工具调用时原样返回那一轮，不吞掉调用方的工具。
+- 菜单栏「WorkBuddy → 更多… → 自动网页搜索」默认勾选，取消勾选后会记住选择，下次请求生效。只影响 WorkBuddy 路由。开启后代理会补上缺少的 `WebSearch`/`WebFetch` 定义，并在模型只调用代理注入的工具时执行和续轮，最多 4 轮。混有调用方工具时，整轮交还客户端。流式请求会等到最后一轮结束再返回。
+- `POST /workbuddy/v1/chat/completions` 可用 `"workbuddy_auto_tools": true/false` 覆盖该请求的默认值。用 `--serve-proxy` 单独运行时默认关闭，可以用环境变量 `CODEX_HELPER_AUTO_TOOLS=1` 开启。
 - 搜索与抓取都使用 WorkBuddy 的 `product.json` 地址；`CODEBUDDY_BASE_URL` 是 CodeBuddy CLI 的模型请求设置。
 
 ## WorkBuddy 多账号行为

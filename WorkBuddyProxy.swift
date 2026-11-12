@@ -128,14 +128,17 @@ final class WorkBuddyProxy {
     private let client: WorkBuddyClient
     private let searchClient: WorkBuddySearchClient
     private let traeClient: TraeClient
+    private let autoToolsEnabled: () -> Bool
     private var listener: NWListener?
     private var routeState = ProxyRouteState()
     private(set) var isRunning = false
 
-    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient, traeClient: TraeClient) {
+    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient, traeClient: TraeClient,
+         autoToolsEnabled: @escaping () -> Bool = { ProcessInfo.processInfo.environment["CODEX_HELPER_AUTO_TOOLS"] == "1" }) {
         self.client = client
         self.searchClient = searchClient
         self.traeClient = traeClient
+        self.autoToolsEnabled = autoToolsEnabled
     }
 
     var isWorkBuddyRunning: Bool { routeState.workBuddy && isRunning }
@@ -284,7 +287,7 @@ final class WorkBuddyProxy {
                 return
             }
             let autoTools = (body.removeValue(forKey: "workbuddy_auto_tools") as? Bool)
-                ?? (ProcessInfo.processInfo.environment["CODEX_HELPER_AUTO_TOOLS"] == "1")
+                ?? autoToolsEnabled()
             let injected = autoTools ? injectSearchTools(&body) : []
             let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
             let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)

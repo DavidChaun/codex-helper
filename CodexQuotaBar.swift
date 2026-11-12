@@ -433,7 +433,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let traeAccounts = TraeAccountPool()
     lazy var traeClient = TraeClient(accounts: traeAccounts)
     lazy var workBuddySearchClient = WorkBuddySearchClient(accounts: workBuddyAccounts)
-    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient, traeClient: traeClient)
+    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient,
+                                            traeClient: traeClient, autoToolsEnabled: { [weak self] in
+        self?.workBuddyAutoSearchEnabled ?? false
+    })
     var status: NSStatusItem!
     var quota: Quota?
     var updated: Date?
@@ -480,6 +483,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var featureDefaults = UserDefaults.standard
     var workBuddyEnabled: Bool {
         featureDefaults.bool(forKey: "workBuddyEnabled")
+    }
+    var workBuddyAutoSearchEnabled: Bool {
+        get { featureDefaults.object(forKey: "workBuddyAutoSearchEnabled") as? Bool ?? true }
+        set { featureDefaults.set(newValue, forKey: "workBuddyAutoSearchEnabled") }
     }
     var traeEnabled: Bool {
         featureDefaults.bool(forKey: "traeEnabled")
@@ -928,6 +935,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         proxyEnabled.target = self
         proxyEnabled.state = workBuddyProxy.isWorkBuddyRouteEnabled ? .on : .off
         moreMenu.addItem(proxyEnabled)
+        let autoSearch = NSMenuItem(title: "自动网页搜索", action: #selector(toggleWorkBuddyAutoSearch), keyEquivalent: "")
+        autoSearch.target = self
+        autoSearch.state = workBuddyAutoSearchEnabled ? .on : .off
+        moreMenu.addItem(autoSearch)
         func workBuddyInfo(_ text: String) {
             let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -1259,6 +1270,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         resetWorkBuddyTimer()
         render()
         if autoCheckin { refreshWorkBuddy(autoClaim: true) }
+    }
+
+    @objc func toggleWorkBuddyAutoSearch() {
+        workBuddyAutoSearchEnabled.toggle()
+        render()
     }
 
     @objc func toggleWorkBuddyProxy() {
@@ -1733,9 +1749,18 @@ struct CodexHelperMain {
 static func main() throws {
 signal(SIGPIPE, SIG_IGN)
 if CommandLine.arguments.contains("--self-test") {
-    let featureDefaults = UserDefaults(suiteName: "local.codex.helper.self-test.\(UUID().uuidString)")!
+    let featureSuite = "local.codex.helper.self-test.\(UUID().uuidString)"
+    let featureDefaults = UserDefaults(suiteName: featureSuite)!
+    defer { featureDefaults.removePersistentDomain(forName: featureSuite) }
     let settingsDelegate = AppDelegate()
     settingsDelegate.featureDefaults = featureDefaults
+    precondition(settingsDelegate.workBuddyAutoSearchEnabled)
+    settingsDelegate.workBuddyAutoSearchEnabled = false
+    let reopenedSettings = AppDelegate()
+    reopenedSettings.featureDefaults = UserDefaults(suiteName: featureSuite)!
+    precondition(!reopenedSettings.workBuddyAutoSearchEnabled)
+    reopenedSettings.workBuddyAutoSearchEnabled = true
+    precondition(settingsDelegate.workBuddyAutoSearchEnabled)
     precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.traeEnabled && !settingsDelegate.openCodexEnabled && !settingsDelegate.usageCloudEnabled)
     precondition(!settingsDelegate.workBuddyRouteAvailable && !settingsDelegate.traeRouteAvailable)
     settingsDelegate.ocxStatusText = "unchecked"
