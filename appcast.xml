@@ -3,6 +3,24 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.9.12</title>
+            <pubDate>Thu, 12 Nov 2026 14:27:52 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.12</link>
+            <sparkle:version>66</sparkle:version>
+            <sparkle:shortVersionString>1.9.12</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.9.12
+
+- 「WorkBuddy → 更多…」新增「自动网页搜索」，默认勾选，关闭后会记住选择，从下一次请求起生效。
+- 开启后，WorkBuddy 模型可按需使用 WorkBuddy 搜索和网页抓取。Trae 和其他模型的搜索设置不变。
+- 自动工具模式下，流式回复会在最后一轮完成后返回。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.9.12/Codex-Helper-Swift-1.9.12.zip" length="2744335" type="application/octet-stream" sparkle:edSignature="AG6rgxW1pNjZeubjgu56CCV/LivvniFMpb9r60ubdV9edtg3oVWEOwqLzoeuFvEyEJpc2v2fmeMvR2AjZK6ACw=="/>
+        </item>
+        <item>
             <title>1.9.11</title>
             <pubDate>Thu, 12 Nov 2026 13:41:52 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.9.11</link>
