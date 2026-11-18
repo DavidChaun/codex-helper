@@ -424,10 +424,21 @@ func quotaRow(_ window: Window, stale: Bool) -> NSView {
     return view
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate, SPUUpdaterDelegate {
     lazy var updaterController = SPUStandardUpdaterController(startingUpdater: true,
-                                                         updaterDelegate: nil,
+                                                         updaterDelegate: self,
                                                          userDriverDelegate: nil)
+
+    func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {
+        let key = CodexTokenPricing.feedKey
+        guard let catalog = appcast.items.lazy.compactMap({ $0.propertiesDictionary[key] as? String }).first,
+              catalog.utf8.count <= 262_144 else { return }
+        let bytes = Data(catalog.utf8)
+        guard UserDefaults.standard.data(forKey: key) != bytes,
+              CodexTokenPricing.decodeCatalog(bytes) != nil else { return }
+        UserDefaults.standard.set(bytes, forKey: key)
+        refreshTokenUsage()
+    }
     let workBuddyAccounts = WorkBuddyAccountPool()
     lazy var workBuddyClient = WorkBuddyClient(accounts: workBuddyAccounts)
     let traeAccounts = TraeAccountPool()
@@ -686,6 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let historyData = featureDefaults.data(forKey: CodexQuotaHistory.defaultsKey)
         let requestedCloud = usageCloudEnabled
         let requestedDevice = usageDevice
+        let requestedPricing = UserDefaults.standard.data(forKey: CodexTokenPricing.feedKey)
         tokenUsageQueue.async {
             let result = Result { try readTokenUsage(self.tokenUsageReader, quota: requestedQuota,
                 quotaObservedAt: requestedQuotaTime, historyData: historyData, range: requestedRange,
@@ -693,7 +705,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             DispatchQueue.main.async {
                 self.tokenUsageBusy = false
                 guard self.tokenUsageRange == requestedRange, self.quota?.weeklyRange() == requestedWeek,
-                      self.usageCloudEnabled == requestedCloud, self.usageDevice == requestedDevice else {
+                      self.usageCloudEnabled == requestedCloud, self.usageDevice == requestedDevice,
+                      UserDefaults.standard.data(forKey: CodexTokenPricing.feedKey) == requestedPricing else {
                     self.refreshTokenUsage()
                     return
                 }
@@ -1861,6 +1874,7 @@ if CommandLine.arguments.contains("--self-test") {
         device: UserDefaults.standard.string(forKey: "usageDevice")).snapshot
     print("本机 Token 用量 · \(snapshot.timeZone)")
     if let message = snapshot.syncMessage { print(message) }
+    for warning in snapshot.usageWarnings { print("⚠ " + warning) }
     for device in snapshot.devices { print("设备：\(device.name)；数据更新：\(device.updated?.description ?? "暂无")") }
     if weeklyRange == nil { print("当前周额度：周期暂不可用") }
     for period in snapshot.periods {

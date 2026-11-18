@@ -39,6 +39,8 @@
 
 从 2026-11-09 00:00（北京时间）起，费用估算还会在每次刷新时读取 `$OPENCODEX_HOME/usage.jsonl`（默认 `~/.opencodex/usage.jsonl`）里已报告的 GPT 用量。原生记录优先，能唯一匹配时补齐缺失的计价字段；无法唯一匹配的重叠记录保留原生用量。代理独有的记录按现有标准／Fast 规则估价，并沿用现有 iCloud 用量同步。
 
+GPT 文本模型费率由仓库每天从 [LiteLLM 公共定价目录](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 同步到 Sparkle 更新源。Codex Helper 在检查更新时接收并缓存目录，离线可使用缓存或安装包自带的快照。新模型按日志中的模型 ID 查价，费率未收录时提示「费率待更新」。已有用量会在收到费率后重新估算。
+
 ## 工具与搜索能力
 
 WorkBuddy 和 Trae 两条 Chat Completions 代理均支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。默认由客户端或 MCP 服务执行模型返回的 `tool_calls`；WorkBuddy 可显式开启下方的自动工具。两条代理均不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。

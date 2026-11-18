@@ -88,23 +88,41 @@ struct CodexTokenUsageGroup: Hashable {
 }
 
 enum CodexTokenPricing {
-    // USD / 1M tokens，2026-11-01 核对：https://developers.openai.com/api/docs/pricing
-    private static let rates: [String: (input: Decimal, cached: Decimal, output: Decimal)] = [
-        "gpt-6-astra": (10, 1, 50),
-        "gpt-6.1-sol": (2, Decimal(1) / 10, 10),
-        "gpt-6.1-terra": (1, Decimal(5) / 100, 5),
-        "gpt-6-sol": (2, Decimal(2) / 10, 10),
-        "gpt-6-luna": (Decimal(1) / 10, Decimal(1) / 100, Decimal(5) / 10),
-        "gpt-5.6-sol": (4, Decimal(4) / 10, 20),
-        "gpt-5.6-terra": (2, Decimal(2) / 10, 12),
-        "gpt-5.6-luna": (Decimal(2) / 10, Decimal(2) / 100, Decimal(12) / 10)
-    ]
+    struct Rate: Codable {
+        let input: Decimal
+        let cached: Decimal
+        let output: Decimal
+    }
+
+    static let feedKey = "codexPricingV1"
+    static let bundledRates: [String: Rate] = {
+        guard let url = Bundle.main.url(forResource: feedKey, withExtension: "json"),
+              let bytes = try? Data(contentsOf: url) else { return [:] }
+        return decodeCatalog(bytes) ?? [:]
+    }()
+
+    static func decodeCatalog(_ bytes: Data) -> [String: Rate]? {
+        guard bytes.count <= 262_144,
+              let rates = try? JSONDecoder().decode([String: Rate].self, from: bytes),
+              !rates.isEmpty, rates.count <= 2048,
+              rates.allSatisfy({ model, rate in
+                  model.range(of: #"^gpt-[a-z0-9.-]{1,100}$"#, options: .regularExpression) != nil &&
+                  [rate.input, rate.cached, rate.output].allSatisfy { $0 > 0 && $0 <= 1_000_000 }
+              }) else { return nil }
+        return rates
+    }
+
+    static var currentRates: [String: Rate] {
+        let cached = UserDefaults.standard.data(forKey: feedKey).flatMap(decodeCatalog) ?? [:]
+        return bundledRates.merging(cached) { _, updated in updated }
+    }
 
     static func estimate(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default") -> Decimal {
         breakdown(model: model, amounts: amounts, serviceTier: serviceTier).total
     }
 
-    static func breakdown(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default") -> CodexTokenCosts {
+    static func breakdown(model: String, amounts: CodexTokenAmounts, serviceTier: String? = "default",
+                          rates: [String: Rate] = bundledRates) -> CodexTokenCosts {
         let multiplier: Decimal
         let tier = CodexTokenTier(serviceTier)
         let label = tier.rawValue
@@ -495,16 +513,21 @@ final class CodexTokenUsageReader {
         if proxy?.failed == true { warnings.insert("OpenCodex 用量日志暂时无法读取") }
         let shared = sync?.exchange(local: raw, selectedDevice: device, now: now)
         let records = shared?.records ?? CodexUsageRecord.merged(raw, warnings: &warnings)
+        let rates = CodexTokenPricing.currentRates
+        var unpricedModels = Set<String>()
         for record in records where record.occurredAt >= querySince.timeIntervalSince1970 && record.occurredAt <= now.timeIntervalSince1970 {
             let date = Date(timeIntervalSince1970: record.occurredAt)
             let group = CodexTokenUsageGroup(model: record.model, tier: CodexTokenTier(record.serviceTier))
-            let costs = CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts, serviceTier: record.serviceTier)
+            let costs = CodexTokenPricing.breakdown(model: record.model, amounts: record.amounts,
+                                                   serviceTier: record.serviceTier, rates: rates)
             for index in periods.indices where date >= periods[index].interval.start && date < periods[index].interval.end {
+                if record.model.hasPrefix("gpt-"), rates[record.model] == nil { unpricedModels.insert(record.model) }
                 periods[index].models[group] = try (periods[index].models[group] ?? CodexTokenAmounts()).adding(record.amounts)
                 periods[index].costs[group] = (periods[index].costs[group] ?? CodexTokenCosts()).adding(costs)
                 periods[index].performance[group, default: CodexOutputPerformance()].include(record)
             }
         }
+        if !unpricedModels.isEmpty { warnings.insert("费率待更新：" + unpricedModels.sorted().joined(separator: "、")) }
         for period in periods { _ = try period.total }
         var snapshot = CodexTokenUsageSnapshot(periods: periods, updated: now, timeZone: timeZone.identifier,
                                        unreadableFiles: unreadable + (background?.unreadable ?? 0),
@@ -776,6 +799,11 @@ extension CodexTokenUsageReader {
             from: Data(#"{"input_tokens":100,"output_tokens":10}"#.utf8))
         precondition(missing.cached == nil && missing.uncached == nil && missing.rows.contains("缓存命中：未记录"))
         let priced = CodexTokenAmounts(input: 200_000, cached: 100_000, cacheWrite: 20_000, output: 10_000, reasoning: 3_000)
+        precondition(CodexTokenPricing.estimate(model: "gpt-6.2-sol", amounts: priced) == Decimal(32) / 100)
+        let futureRates = CodexTokenPricing.decodeCatalog(Data(#"{"gpt-99-new":{"input":2,"cached":0.1,"output":10}}"#.utf8))!
+        precondition(CodexTokenPricing.breakdown(model: "gpt-99-new", amounts: priced, serviceTier: "fast",
+                                                rates: futureRates).total == Decimal(64) / 100)
+        precondition(CodexTokenPricing.decodeCatalog(Data(#"{"gpt-99-new":{"input":-2,"cached":0.1,"output":10}}"#.utf8)) == nil)
         precondition(CodexTokenPricing.estimate(model: "gpt-6.1-sol", amounts: priced) == Decimal(32) / 100)
         let parts = CodexTokenPricing.breakdown(model: "gpt-6.1-sol", amounts: priced)
         precondition(parts.uncached == Decimal(16) / 100 && parts.cached == Decimal(1) / 100)
