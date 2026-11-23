@@ -127,14 +127,12 @@ final class WorkBuddyProxy {
 
     private let queue = DispatchQueue(label: "local.codex-helper.workbuddy.proxy", qos: .utility)
     private let client: WorkBuddyClient
-    private let searchClient: WorkBuddySearchClient
     private var listener: NWListener?
     private var routeState = ProxyRouteState()
     private(set) var isRunning = false
 
-    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient) {
+    init(client: WorkBuddyClient) {
         self.client = client
-        self.searchClient = searchClient
     }
 
     var isWorkBuddyRunning: Bool { routeState.workBuddy && isRunning }
@@ -256,15 +254,6 @@ final class WorkBuddyProxy {
                 sendJSON(connection, ["object": "list", "data": try client.models().map(\.json), "has_more": false])
                 return
             }
-            // 直连 CodeBuddy 的 /agenttool/*：让没装 CLI 的 harness 也能用搜索/抓取。
-            if request.method == "POST", path == "/search" || path == "/fetch" {
-                guard let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
-                    sendJSON(connection, status: 400, ["error": ["message": "Invalid JSON body", "type": "invalid_request_error"]])
-                    return
-                }
-                handleAgentTool(connection, path: path, body: body)
-                return
-            }
             guard request.method == "POST", path == "/chat/completions",
                   let parsedBody = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
@@ -346,32 +335,6 @@ final class WorkBuddyProxy {
     // MARK: - 原生搜索工具
 
     static let unsupportedSearchMessage = "WorkBuddy 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
-
-    private func handleAgentTool(_ connection: NWConnection, path: String, body: [String: Any]) {
-        do {
-            if path == "/search" {
-                let outcome = try searchClient.search(body)
-                sendJSON(connection, [
-                    "provider": outcome.provider,
-                    "results": outcome.results.map { hit -> [String: Any] in
-                        var value: [String: Any] = ["title": hit.title, "url": hit.url, "snippet": hit.snippet]
-                        if let site = hit.site { value["site"] = site }
-                        if let favicon = hit.favicon { value["favicon"] = favicon }
-                        return value
-                    },
-                    "total_results": outcome.totalResults,
-                    "response_time_ms": outcome.responseTimeMs
-                ])
-            } else {
-                let outcome = try searchClient.fetch(body, model: body["model_name"] as? String)
-                sendJSON(connection, ["url": outcome.url, "content_type": outcome.contentType,
-                                      "content": outcome.content])
-            }
-        } catch {
-            sendJSON(connection, status: 502,
-                     ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
-        }
-    }
 
     private func chat(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?,
                       _ upstream: @escaping (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
@@ -535,7 +498,6 @@ final class WorkBuddyProxy {
         // 服务端内置搜索仍要拒绝；普通 function 工具一律放行（工具循环属于客户端）。
         precondition(unsupportedSearchParameter(["web_search_options": [:]]) == "web_search_options")
         precondition(unsupportedSearchParameter(["tools": [["type": "web_search"]]]) == "tools[0].type")
-        precondition(unsupportedSearchParameter(["tools": WorkBuddySearchClient.toolDefinitions]) == nil)
     }
 }
 

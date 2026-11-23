@@ -9,7 +9,7 @@ mkdir -p ".build/swift-cache"
 swiftc -swift-version 5 -target arm64-apple-macosx15.0 -module-cache-path ".build/swift-cache" -F Vendor/Sparkle \
   -framework AppKit -framework Network -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  CodexQuotaBar.swift CodexQuotaHistory.swift CodexTokenUsage.swift CodexUsageSync.swift CodexResponseTiming.swift CodexBackgroundUsage.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddySearch.swift WorkBuddyProxy.swift WorkBuddyMessages.swift ProxyDebugLog.swift -o ".build/CodexQuotaBar"
+  CodexQuotaBar.swift CodexQuotaHistory.swift CodexTokenUsage.swift CodexUsageSync.swift CodexResponseTiming.swift CodexBackgroundUsage.swift WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddyProxy.swift WorkBuddyMessages.swift ProxyDebugLog.swift -o ".build/CodexQuotaBar"
 cp ".build/CodexQuotaBar" "$app/Contents/MacOS/CodexQuotaBar"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 pricing="$app/Contents/Resources/codexPricingV1.json"
@@ -26,8 +26,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Codex Helper</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>72</string>
-<key>CFBundleShortVersionString</key><string>1.11.0</string>
+<key>CFBundleVersion</key><string>73</string>
+<key>CFBundleShortVersionString</key><string>1.11.1</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSHighResolutionCapable</key><true/>

@@ -658,8 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
     let workBuddyAccounts = WorkBuddyAccountPool()
     lazy var workBuddyClient = WorkBuddyClient(accounts: workBuddyAccounts)
-    lazy var workBuddySearchClient = WorkBuddySearchClient(accounts: workBuddyAccounts)
-    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient)
+    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient)
     var status: NSStatusItem!
     var quota: Quota?
     var updated: Date?
@@ -1828,7 +1827,6 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(workBuddyRotationCredits(previousBalance: 2440, currentBalance: 2500, accumulated: 45) == 45)
     WorkBuddyClient.selfTest()
     WorkBuddyAccountPool.selfTest()
-    WorkBuddySearchClient.selfTest()
     WorkBuddyProxy.selfTest()
     try ProxyDebugLog.selfTest()
     print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 T3 Code 导入")
@@ -1861,7 +1859,7 @@ if CommandLine.arguments.contains("--self-test") {
     } else if CommandLine.arguments.contains("--serve-proxy") {
         let accounts = WorkBuddyAccountPool()
         let client = WorkBuddyClient(accounts: accounts)
-        let proxy = WorkBuddyProxy(client: client, searchClient: WorkBuddySearchClient(accounts: accounts))
+        let proxy = WorkBuddyProxy(client: client)
         // 由 setWorkBuddyRunning 决定是否真的监听：关闭时不占用端口。
         try proxy.setWorkBuddyRunning(ProcessInfo.processInfo.environment["CODEX_HELPER_WORKBUDDY"] != "0")
         print("Chat proxy listening on 127.0.0.1:\(WorkBuddyProxy.port)")
