@@ -659,10 +659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let workBuddyAccounts = WorkBuddyAccountPool()
     lazy var workBuddyClient = WorkBuddyClient(accounts: workBuddyAccounts)
     lazy var workBuddySearchClient = WorkBuddySearchClient(accounts: workBuddyAccounts)
-    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient,
-                                            autoToolsEnabled: { [weak self] in
-        self?.workBuddyAutoSearchEnabled ?? false
-    })
+    lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient)
     var status: NSStatusItem!
     var quota: Quota?
     var updated: Date?
@@ -703,10 +700,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let importQueue = DispatchQueue(label: "local.codex.helper.t3-import")
     var workBuddyEnabled: Bool {
         featureDefaults.bool(forKey: "workBuddyEnabled")
-    }
-    var workBuddyAutoSearchEnabled: Bool {
-        get { featureDefaults.object(forKey: "workBuddyAutoSearchEnabled") as? Bool ?? true }
-        set { featureDefaults.set(newValue, forKey: "workBuddyAutoSearchEnabled") }
     }
     var openCodexEnabled: Bool {
         featureDefaults.bool(forKey: "openCodexEnabled")
@@ -1073,10 +1066,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         t3Import.target = self
         t3Import.isEnabled = !t3CodeBusy
         moreMenu.addItem(t3Import)
-        let autoSearch = NSMenuItem(title: "自动网页搜索", action: #selector(toggleWorkBuddyAutoSearch), keyEquivalent: "")
-        autoSearch.target = self
-        autoSearch.state = workBuddyAutoSearchEnabled ? .on : .off
-        moreMenu.addItem(autoSearch)
         func workBuddyInfo(_ text: String) {
             let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -1313,11 +1302,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         resetWorkBuddyTimer()
         render()
         if autoCheckin { refreshWorkBuddy(autoClaim: true) }
-    }
-
-    @objc func toggleWorkBuddyAutoSearch() {
-        workBuddyAutoSearchEnabled.toggle()
-        render()
     }
 
     @objc func toggleWorkBuddyProxy() {
@@ -1775,13 +1759,6 @@ if CommandLine.arguments.contains("--self-test") {
     defer { featureDefaults.removePersistentDomain(forName: featureSuite) }
     let settingsDelegate = AppDelegate()
     settingsDelegate.featureDefaults = featureDefaults
-    precondition(settingsDelegate.workBuddyAutoSearchEnabled)
-    settingsDelegate.workBuddyAutoSearchEnabled = false
-    let reopenedSettings = AppDelegate()
-    reopenedSettings.featureDefaults = UserDefaults(suiteName: featureSuite)!
-    precondition(!reopenedSettings.workBuddyAutoSearchEnabled)
-    reopenedSettings.workBuddyAutoSearchEnabled = true
-    precondition(settingsDelegate.workBuddyAutoSearchEnabled)
     precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.openCodexEnabled && !settingsDelegate.usageCloudEnabled)
     precondition(!settingsDelegate.workBuddyRouteAvailable)
     settingsDelegate.ocxStatusText = "unchecked"

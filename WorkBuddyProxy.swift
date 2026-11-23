@@ -25,6 +25,9 @@ private struct ProxyRequest {
 
 private func chatWantsStream(_ body: [String: Any]) -> Bool { body["stream"] as? Bool == true }
 
+/// 上游按「行」回调（见 WorkBuddyClient.request），一次回调可能只是半帧 JSON，
+/// 也可能在某行里挤着多帧。所以必须增量累积，只在 JSON 完整时才吐出一整帧；
+/// 否则半帧会被判成「不可解析 => 暂留」，正文就永远发不出去。
 private func unsupportedSearchParameter(_ body: [String: Any]) -> String? {
     func isServerSearch(_ tool: [String: Any]) -> Bool {
         let type = tool["type"] as? String ?? ""
@@ -125,16 +128,13 @@ final class WorkBuddyProxy {
     private let queue = DispatchQueue(label: "local.codex-helper.workbuddy.proxy", qos: .utility)
     private let client: WorkBuddyClient
     private let searchClient: WorkBuddySearchClient
-    private let autoToolsEnabled: () -> Bool
     private var listener: NWListener?
     private var routeState = ProxyRouteState()
     private(set) var isRunning = false
 
-    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient,
-         autoToolsEnabled: @escaping () -> Bool = { ProcessInfo.processInfo.environment["CODEX_HELPER_AUTO_TOOLS"] == "1" }) {
+    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient) {
         self.client = client
         self.searchClient = searchClient
-        self.autoToolsEnabled = autoToolsEnabled
     }
 
     var isWorkBuddyRunning: Bool { routeState.workBuddy && isRunning }
@@ -270,25 +270,17 @@ final class WorkBuddyProxy {
                 sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
                 return
             }
-            // 可选：为不具备原生搜索能力的 harness 注入 WebSearch / WebFetch 工具，
-            // 只追加缺失的工具，并自动执行这些工具。
-            var body = parsedBody
-            // P2b：服务端搜索校验在两条路径之前统一执行，自动工具不能绕过。
+            // 代理不注入、也不代执行任何工具：工具循环属于客户端。
+            // 这里只拒绝上游不支持的服务端内置搜索。
+            let body = parsedBody
             if let parameter = unsupportedSearchParameter(body) {
                 sendJSON(connection, status: 400,
                          ["error": ["message": Self.unsupportedSearchMessage, "type": "invalid_request_error",
                                     "code": "unsupported_server_search", "param": parameter]])
                 return
             }
-            let autoTools = (body.removeValue(forKey: "workbuddy_auto_tools") as? Bool)
-                ?? autoToolsEnabled()
-            let injected = autoTools ? injectSearchTools(&body) : []
             let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
             let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
-            if !injected.isEmpty {
-                chatWithAutoTools(connection, body, injectedTools: injected, callerID: callerID, debug: debug)
-                return
-            }
             chat(connection, body, debug: debug) {
                 self.client.chat(body, debug: debug,
                                  session: CodeBuddyConversationSession(callerID: callerID),
@@ -354,8 +346,6 @@ final class WorkBuddyProxy {
     // MARK: - 原生搜索工具
 
     static let unsupportedSearchMessage = "WorkBuddy 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
-    /// 自动续轮上限，避免模型反复调用搜索导致无限循环。
-    private static let maxAutoToolRounds = 4
 
     private func handleAgentTool(_ connection: NWConnection, path: String, body: [String: Any]) {
         do {
@@ -381,126 +371,6 @@ final class WorkBuddyProxy {
             sendJSON(connection, status: 502,
                      ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
         }
-    }
-
-    /// 只补客户端没有的工具，绝不覆盖调用方自带的定义。
-    /// 返回本次真正追加的工具名；调用方自带的同名工具不会被认领，也不会被覆盖。
-    private func injectSearchTools(_ body: inout [String: Any]) -> Set<String> {
-        var tools = body["tools"] as? [[String: Any]] ?? []
-        let existing = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
-        let injected = Self.injectedToolNames(from: WorkBuddySearchClient.toolDefinitions, existing: existing)
-        guard !injected.isEmpty else { return injected }
-        for definition in WorkBuddySearchClient.toolDefinitions {
-            guard let name = (definition["function"] as? [String: Any])?["name"] as? String,
-                  injected.contains(name) else { continue }
-            tools.append(definition)
-        }
-        body["tools"] = tools
-        return injected
-    }
-
-    /// 客户端没开启搜索能力时，代理替它执行 WebSearch/WebFetch 并把结果续回模型。
-    /// 缓存每轮 SSE，只向客户端回放最后一轮的事件。
-    private func chatWithAutoTools(_ connection: NWConnection, _ body: [String: Any],
-                                   injectedTools: Set<String>, callerID: String?, debug: ProxyDebugLog?) {
-        let wantsStream = chatWantsStream(body)
-        var working = body
-        // 一个代理请求 = 一个 CodeBuddy 会话：所有轮次与重试共用同一组关联 ID。
-        let session = CodeBuddyConversationSession(callerID: callerID)
-
-        func run(round: Int) {
-            let collector = ChatCompletionCollector(model: working["model"] as? String ?? "unknown")
-            var replay = Data()
-            self.client.chat(working, debug: debug, session: session, onStart: {}, onData: { data in
-                debug?.observe(data)
-                collector.consume(data)
-                if wantsStream { replay.append(data) }
-            }) { error in
-                if let error {
-                    debug?.finish(error)
-                    self.sendJSON(connection, status: 502,
-                                  ["error": ["message": error.localizedDescription, "type": "upstream_error"]])
-                    return
-                }
-                guard let result = collector.result() else {
-                    let message = collector.errorMessage ?? "Empty upstream response"
-                    debug?.finish(NSError(domain: "CodexHelper.Proxy", code: 502,
-                                          userInfo: [NSLocalizedDescriptionKey: message]))
-                    self.sendJSON(connection, status: 502,
-                                  ["error": ["message": message, "type": "upstream_error"]])
-                    return
-                }
-                let message = ((result["choices"] as? [[String: Any]])?.first?["message"]) as? [String: Any] ?? [:]
-                let calls = (message["tool_calls"] as? [[String: Any]]) ?? []
-                // 只有代理自己注入的工具才代为执行；调用方自带的同名工具不能抢。
-                let ownedCalls = calls.filter {
-                    guard let name = (($0["function"] as? [String: Any])?["name"] as? String) else { return false }
-                    return injectedTools.contains(name)
-                }
-                // 没有可执行的调用、已达上限、或混有调用方工具时，整轮交还客户端。
-                guard !ownedCalls.isEmpty, round < Self.maxAutoToolRounds, ownedCalls.count == calls.count else {
-                    debug?.finish(nil)
-                    if wantsStream {
-                        if !collector.sawDone { replay.append(Data("data: [DONE]\n\n".utf8)) }
-                        self.stream(connection) { start, send, done in
-                            start()
-                            send(replay)
-                            done(nil)
-                        }
-                    } else {
-                        self.sendJSON(connection, result)
-                    }
-                    return
-                }
-
-                var history = working["messages"] as? [[String: Any]] ?? []
-                history.append(message)
-                for call in ownedCalls {
-                    let callID = call["id"] as? String ?? ""
-                    let function = call["function"] as? [String: Any] ?? [:]
-                    let name = function["name"] as? String ?? ""
-                    let rawArguments = function["arguments"] as? String ?? "{}"
-                    history.append(["role": "tool", "tool_call_id": callID,
-                                    "content": self.executeSearchTool(name: name, rawArguments: rawArguments)])
-                }
-                working["messages"] = history
-                run(round: round + 1)
-            }
-        }
-        run(round: 0)
-    }
-
-    private func executeSearchTool(name: String, rawArguments: String) -> String {
-        guard let data = rawArguments.data(using: .utf8),
-              let arguments = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return "Error: tool arguments are not valid JSON."
-        }
-        do {
-            if name == "WebSearch" {
-                let outcome = try searchClient.search(arguments)
-                guard !outcome.results.isEmpty else {
-                    return "No search results found for query: \"\(arguments["query"] as? String ?? "")\""
-                }
-                var text = "# Search Results for \"\(arguments["query"] as? String ?? "")\"\n\n"
-                for (index, hit) in outcome.results.enumerated() {
-                    text += "## \(index + 1). [\(hit.title)](\(hit.url))\n\(hit.snippet)\n\n**URL:** \(hit.url)\n\n---\n\n"
-                }
-                text += "*Found \(outcome.results.count) result\(outcome.results.count == 1 ? "" : "s") • Provider: \(outcome.provider) • Search performed on \(Self.todayString())*"
-                return text
-            }
-            let outcome = try searchClient.fetch(arguments)
-            return outcome.content
-        } catch {
-            return "Error: \(error.localizedDescription)"
-        }
-    }
-
-    private static func todayString() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
     }
 
     private func chat(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?,
@@ -662,32 +532,10 @@ final class WorkBuddyProxy {
         precondition(proxyRoute(for: "/healthz") == .unknown)
         precondition(proxyRoute(for: "/") == .unknown)
 
-        // P1b 回归：只认代理自己注入的工具，调用方自带的同名工具不能被抢。
-        let injected = injectedToolNames(from: WorkBuddySearchClient.toolDefinitions,
-                                         existing: ["WebSearch"])   // 客户端已自带 WebSearch
-        precondition(injected == ["WebFetch"], "只应补 WebFetch，实得 \(injected)")
-        let none = injectedToolNames(from: WorkBuddySearchClient.toolDefinitions,
-                                     existing: ["WebSearch", "WebFetch"])
-        precondition(none.isEmpty, "两个都已存在时不应注入任何工具")
-        let both = injectedToolNames(from: WorkBuddySearchClient.toolDefinitions, existing: [])
-        precondition(both == ["WebSearch", "WebFetch"])
-
-        // P2b 回归：服务端搜索校验对自动工具路径同样生效。
+        // 服务端内置搜索仍要拒绝；普通 function 工具一律放行（工具循环属于客户端）。
         precondition(unsupportedSearchParameter(["web_search_options": [:]]) == "web_search_options")
         precondition(unsupportedSearchParameter(["tools": [["type": "web_search"]]]) == "tools[0].type")
-        // 普通 function 形式的 WebSearch（CodeBuddy 的实际做法）必须放行。
         precondition(unsupportedSearchParameter(["tools": WorkBuddySearchClient.toolDefinitions]) == nil)
-    }
-
-    /// 可脱离网络断言的注入逻辑：只返回真正追加的工具名。
-    static func injectedToolNames(from definitions: [[String: Any]], existing: Set<String>) -> Set<String> {
-        var names = Set<String>()
-        for definition in definitions {
-            guard let name = (definition["function"] as? [String: Any])?["name"] as? String else { continue }
-            if existing.contains(name) { continue }
-            names.insert(name)
-        }
-        return names
     }
 }
 

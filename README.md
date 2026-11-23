@@ -46,7 +46,7 @@ GPT 文本模型费率由仓库每天从 [LiteLLM 公共定价目录](https://gi
 
 ## 工具与搜索能力
 
-WorkBuddy Chat Completions 代理支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。默认由客户端或 MCP 服务执行模型返回的 `tool_calls`；WorkBuddy 可显式开启下方的自动工具。代理不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
+WorkBuddy Chat Completions 代理支持普通 `type: "function"` 工具，并把模型返回的 `tool_calls` 原样透传给客户端。**代理不注入工具定义，也不代执行任何工具**：工具循环属于客户端（T3 Code / Claude Desktop 等），由它们决定执行并回灌结果。代理只拒绝上游不支持的服务端内置搜索（`web_search`、`web_search_options` 这类）。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
 
 两条代理都不支持服务端内置 `web_search` / `web_fetch`。请求的 `tools` 或 `tool_choice` 使用这些类型（含 `web_search_preview`、`web_search_20250305` 等下划线后缀变体），或传入非 null 的 `web_search_options` 时，统一在发送上游请求前返回 HTTP 400，错误 `code` 为 `unsupported_server_search`，`param` 指出不支持的字段。不会静默删除工具、忽略搜索配置或返回假成功；流式与非流式请求规则相同。需要搜索时，请关闭客户端的服务端内置搜索配置，改用客户端 / MCP 执行的普通 function 搜索工具。
 
@@ -56,7 +56,7 @@ CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行�
 
 - `POST /workbuddy/v1/search` — 入参同 CLI 的 `WebSearch`：`query`（≥2 字符）、`allowed_domains`、`blocked_domains`、`freshness`（`d1`–`d30` / `m1`–`m12` / `y1`–`y5`）；`blocked_domains` 会按 CLI 的规则折进查询串 `query (-site:a -site:b)`。返回 `{provider, results[], total_results, response_time_ms}`。
 - `POST /workbuddy/v1/fetch` — 入参 `url`、`prompt`；`http://` 自动升级为 `https://`，正文上限 100000 字符，超时 20 秒。返回 `{url, content_type, content}`（markdown）。
-- 菜单栏「WorkBuddy → 更多… → 自动网页搜索」默认勾选，取消勾选后会记住选择，下次请求生效。只影响 WorkBuddy 路由。开启后代理会补上缺少的 `WebSearch`/`WebFetch` 定义，并在模型只调用代理注入的工具时执行和续轮，最多 4 轮。混有调用方工具时，整轮交还客户端。流式请求会等到最后一轮结束再返回。
+- 搜索与抓取能力以两个 HTTP 端点提供，供客户端自行调用：`POST /workbuddy/v1/search`（参数 `query` 至少 2 字符，可选 `allowed_domains` / `blocked_domains` / `freshness`）与 `POST /workbuddy/v1/fetch`（`url` + `prompt`）。前者返回 `results[]`（`title`/`url`/`snippet`/`site`/`favicon`），后者返回已转成 markdown 的 `content`。端点复用 WorkBuddy 账号池，`blocked_domains` 会折进查询串，抓取上限 10 万字符、20 秒超时。
 - `POST /workbuddy/v1/chat/completions` 可用 `"workbuddy_auto_tools": true/false` 覆盖该请求的默认值。用 `--serve-proxy` 单独运行时默认关闭，可以用环境变量 `CODEX_HELPER_AUTO_TOOLS=1` 开启。
 - 搜索与抓取都使用 WorkBuddy 的 `product.json` 地址；`CODEBUDDY_BASE_URL` 是 CodeBuddy CLI 的模型请求设置。
 
