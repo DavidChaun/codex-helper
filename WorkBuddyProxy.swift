@@ -317,18 +317,19 @@ final class WorkBuddyProxy {
 
     private func handleWorkBuddyMessages(_ connection: NWConnection, _ request: ProxyRequest) {
         let body: [String: Any]
+        let model: String
         do {
             guard let source = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
                 throw WorkBuddyError.message("Expected a JSON object")
             }
             body = try WorkBuddyMessages.chatBody(source)
+            model = source["model"] as? String ?? "unknown"
         } catch {
             sendJSON(connection, status: 400, WorkBuddyMessages.error(error.localizedDescription, type: "invalid_request_error"))
             return
         }
         let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
         let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
-        let model = body["model"] as? String ?? "unknown"
         let produce: (@escaping () -> Void, ((Data) -> Void)?, @escaping (Result<[String: Any], Error>) -> Void) -> Void = { start, emit, done in
             let response = WorkBuddyMessagesResponse(model: model, emit: emit)
             self.client.chat(body, debug: debug, session: CodeBuddyConversationSession(callerID: callerID),

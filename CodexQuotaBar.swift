@@ -99,6 +99,97 @@ func workBuddyOcxConfigurationCommands(firstConfiguration: Bool) -> [[String]] {
     return commands
 }
 
+func importWorkBuddyClaudeDesktop(port: Int, library: URL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/Claude-3p/configLibrary")) throws {
+    let files = FileManager.default
+    let profileName = "WorkBuddy"
+    // A stable ID lets a retry finish publishing the same new profile.
+    let newProfileID = "f2bf5f20-978c-429a-9c72-b7a7845967c9"
+    let metadataURL = library.appendingPathComponent("_meta.json")
+
+    func readObject(_ url: URL, fallback: [String: Any] = [:]) throws -> [String: Any] {
+        guard files.fileExists(atPath: url.path) else { return fallback }
+        guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            throw WorkBuddyError.message("Claude Desktop 3P 配置格式无效：\(url.lastPathComponent)")
+        }
+        return object
+    }
+
+    var metadata = try readObject(metadataURL, fallback: ["entries": []])
+    guard var entries = metadata["entries"] as? [[String: Any]] else {
+        throw WorkBuddyError.message("Claude Desktop 3P 配置列表格式无效")
+    }
+    let existing = entries.first { $0["name"] as? String == profileName }
+    let id: String
+    if let existing {
+        guard let value = existing["id"] as? String,
+              value.range(of: #"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"#, options: .regularExpression) != nil else {
+            throw WorkBuddyError.message("Claude Desktop 3P 的 WorkBuddy 配置 ID 无效")
+        }
+        id = value
+    } else {
+        id = newProfileID
+        entries.append(["id": id, "name": profileName])
+    }
+
+    let profileURL = library.appendingPathComponent(id + ".json")
+    var profile = try readObject(profileURL)
+    profile.merge([
+        "inferenceProvider": "gateway", "inferenceCredentialKind": "static",
+        "inferenceGatewayBaseUrl": "http://127.0.0.1:\(port)/workbuddy",
+        "inferenceGatewayApiKey": workBuddyAPIKey, "inferenceGatewayAuthScheme": "x-api-key",
+        "modelDiscoveryEnabled": false, "desktopHome": "standard",
+        "inferenceModels": [["name": WorkBuddyMessages.desktopDeepSeekAlias, "labelOverride": "DeepSeek V4.1 Flash",
+                             "supports1m": true, "prefer1m": true, "behavesAs": WorkBuddyMessages.desktopModelFamily,
+                             "maxEffort": "max"]],
+    ]) { _, imported in imported }
+
+    try files.createDirectory(at: library, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try JSONSerialization.data(withJSONObject: profile, options: [.prettyPrinted, .sortedKeys]).write(to: profileURL, options: .atomic)
+    try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: profileURL.path)
+    if existing == nil || metadata["appliedId"] as? String != id {
+        metadata["entries"] = entries
+        metadata["appliedId"] = id
+        try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys]).write(to: metadataURL, options: .atomic)
+    }
+}
+
+private func selfTestWorkBuddyClaudeDesktopImport() throws {
+    let library = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: library) }
+    try importWorkBuddyClaudeDesktop(port: 58100, library: library)
+    let metadataURL = library.appendingPathComponent("_meta.json")
+    var metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as! [String: Any]
+    let workBuddyID = metadata["appliedId"] as! String
+    let profileURL = library.appendingPathComponent(workBuddyID + ".json")
+    var profile = try JSONSerialization.jsonObject(with: Data(contentsOf: profileURL)) as! [String: Any]
+    profile["defaultModelEffort"] = "high"
+    try JSONSerialization.data(withJSONObject: profile).write(to: profileURL)
+
+    var entries = metadata["entries"] as! [[String: Any]]
+    entries.append(["id": "other", "name": "Other Gateway"])
+    metadata["entries"] = entries
+    metadata["appliedId"] = "other"
+    try JSONSerialization.data(withJSONObject: metadata).write(to: metadataURL)
+    let otherURL = library.appendingPathComponent("other.json")
+    let otherProfile = Data(#"{"inferenceProvider":"gateway"}"#.utf8)
+    try otherProfile.write(to: otherURL)
+
+    try importWorkBuddyClaudeDesktop(port: 58101, library: library)
+    try importWorkBuddyClaudeDesktop(port: 58101, library: library)
+    let selected = try JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as! [String: Any]
+    precondition(selected["appliedId"] as? String == workBuddyID)
+    precondition(NSArray(array: selected["entries"] as! [Any]).isEqual(to: entries))
+    let preserved = try Data(contentsOf: otherURL)
+    precondition(preserved == otherProfile)
+    let updated = try JSONSerialization.jsonObject(with: Data(contentsOf: profileURL)) as! [String: Any]
+    let models = updated["inferenceModels"] as! [[String: Any]]
+    precondition(models.count == 1 && models[0]["name"] as? String == WorkBuddyMessages.desktopDeepSeekAlias)
+    precondition(models[0]["maxEffort"] as? String == "max" && models[0]["behavesAs"] as? String == WorkBuddyMessages.desktopModelFamily)
+    precondition(updated["inferenceGatewayBaseUrl"] as? String == "http://127.0.0.1:58101/workbuddy")
+    precondition(updated["defaultModelEffort"] as? String == "high")
+}
+
 func traeOcxConfigurationCommands(firstConfiguration: Bool) -> [[String]] {
     var commands = [
         ["provider", "add", "trae", "--adapter", "openai-chat",
@@ -948,6 +1039,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         proxyEnabled.target = self
         proxyEnabled.state = workBuddyProxy.isWorkBuddyRouteEnabled ? .on : .off
         moreMenu.addItem(proxyEnabled)
+        let claudeImport = NSMenuItem(title: "导入 Claude Desktop 3P", action: #selector(importClaudeDesktop3P), keyEquivalent: "")
+        claudeImport.target = self
+        moreMenu.addItem(claudeImport)
         let autoSearch = NSMenuItem(title: "自动网页搜索", action: #selector(toggleWorkBuddyAutoSearch), keyEquivalent: "")
         autoSearch.target = self
         autoSearch.state = workBuddyAutoSearchEnabled ? .on : .off
@@ -1294,6 +1388,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         guard workBuddyRouteAvailable else { return }
         try? workBuddyProxy.setWorkBuddyRunning(!workBuddyProxy.isWorkBuddyRouteEnabled)
         render()
+    }
+
+    @objc func importClaudeDesktop3P() {
+        let alert = NSAlert()
+        let proxyWasEnabled = workBuddyProxy.isWorkBuddyRouteEnabled
+        do {
+            guard workBuddyRouteAvailable else { throw WorkBuddyError.message("请先安装并登录 WorkBuddy") }
+            try workBuddyProxy.setWorkBuddyRunning(true)
+            try importWorkBuddyClaudeDesktop(port: WorkBuddyProxy.port)
+            alert.messageText = "已导入 Claude Desktop 3P"
+            alert.informativeText = "已选用 WorkBuddy 配置，只提供 DeepSeek V4.1 Flash，支持选择 effort。重新打开 Claude Desktop 后生效。"
+        } catch {
+            if !proxyWasEnabled { try? workBuddyProxy.setWorkBuddyRunning(false) }
+            alert.alertStyle = .warning
+            alert.messageText = "导入 Claude Desktop 3P 失败"
+            alert.informativeText = error.localizedDescription
+        }
+        render()
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc func toggleTraeProxy() {
@@ -1788,6 +1902,7 @@ if CommandLine.arguments.contains("--self-test") {
     try CodexResponseTimingReader.selfTest()
     try CodexBackgroundUsageReader.selfTest()
     try CodexUsageSync.selfTest()
+    try selfTestWorkBuddyClaudeDesktopImport()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
     precondition(parsed.title == "5h: 100% · 1w: 94%")

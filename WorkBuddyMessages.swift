@@ -1,6 +1,10 @@
 import Foundation
 
 enum WorkBuddyMessages {
+    // Desktop 3P recognizes the Claude family ID in this namespaced local route.
+    static let desktopModelFamily = "claude-sonnet-4-6"
+    static let desktopDeepSeekAlias = "workbuddy/\(desktopModelFamily)"
+
     static func chatBody(_ source: [String: Any]) throws -> [String: Any] {
         guard let model = source["model"] as? String, !model.isEmpty,
               let turns = source["messages"] as? [[String: Any]], !turns.isEmpty,
@@ -66,7 +70,8 @@ enum WorkBuddyMessages {
             if !thinking.isEmpty { message["reasoning_content"] = thinking.joined(separator: "\n") }
             if !parts.isEmpty || !calls.isEmpty || !thinking.isEmpty { messages.append(message) }
         }
-        var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": maxTokens,
+        let upstreamModel = model == desktopDeepSeekAlias ? "deepseek-v4.1-flash" : model
+        var body: [String: Any] = ["model": upstreamModel, "messages": messages, "max_tokens": maxTokens,
                                    "stream": source["stream"] as? Bool == true, "stream_options": ["include_usage": true]]
         for key in ["temperature", "top_p", "top_k"] { body[key] = source[key] }
         if let stop = source["stop_sequences"] as? [String], !stop.isEmpty { body["stop"] = stop }
@@ -325,6 +330,10 @@ extension WorkBuddyMessages {
         """#
         let input = try! JSONSerialization.jsonObject(with: Data(sample.utf8)) as! [String: Any]
         let body = try! chatBody(input)
+        precondition(body["model"] as? String == "test")
+        var desktopInput = input
+        desktopInput["model"] = desktopDeepSeekAlias
+        precondition((try! chatBody(desktopInput))["model"] as? String == "deepseek-v4.1-flash")
         let turns = body["messages"] as! [[String: Any]]
         precondition(turns.compactMap { $0["role"] as? String } == ["system", "user", "assistant", "tool", "user"])
         precondition(turns[0]["content"] as? String == "system prompt")

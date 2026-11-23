@@ -537,6 +537,9 @@ final class WorkBuddyClient {
                 value = value.replacingOccurrences(
                     of: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
                     with: "You are Claude Code, Anthropic's official CLI tool for Claude.")
+                    .replacingOccurrences(
+                        of: "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+                        with: "Report client issues through the desktop app.")
             }
             return value.replacingOccurrences(of: "You are Claude Code, Anthropic's official CLI for Claude.",
                                        with: "You are Claude Code, Anthropic's official CLI tool for Claude.")
@@ -618,6 +621,18 @@ final class WorkBuddyClient {
         precondition(NSArray(array: desktop["tools"] as! [Any]).isEqual(to: desktopTools))
         precondition(desktop["max_tokens"] as? Int == 64000)
         precondition(NSDictionary(dictionary: client.upstreamBody(desktop)).isEqual(to: desktop))
+        let feedback = "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"
+        let messagesRequest = try! WorkBuddyMessages.chatBody([
+            "model": "workbuddy/claude-sonnet-4-6", "max_tokens": 256,
+            "system": [["type": "text", "text": desktopIdentity], ["type": "text", "text": feedback]],
+            "messages": [["role": "user", "content": feedback]], "output_config": ["effort": "max"]
+        ])
+        let messagesUpstream = client.upstreamBody(messagesRequest)
+        let converted = messagesUpstream["messages"] as! [[String: Any]]
+        precondition(converted[0]["content"] as? String == cliIdentity + "\n\nReport client issues through the desktop app.")
+        precondition(converted[1]["content"] as? String == feedback)
+        precondition(messagesUpstream["model"] as? String == "deepseek-v4.1-flash")
+        precondition(messagesUpstream["reasoning_effort"] as? String == "max")
         // CodeBuddy 2.183.0 的 body 适配：缓存寿命、推理摘要、用量回传与 harness 元数据。
         precondition(desktop["cache_retention"] as? String == "long")
         precondition(desktop["reasoning_summary"] as? String == "auto")

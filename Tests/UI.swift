@@ -165,6 +165,13 @@ struct UICheck {
         delegate.clearTokenDateRange()
         precondition(!delegate.status.menu!.items.contains { $0.title.hasPrefix("同周期查询") || $0.title.hasPrefix("自选区间") })
         precondition(delegate.status.menu!.items.contains { $0.title.hasPrefix("当前周额度") })
+        defaults.setVolatileDomain(["workBuddyEnabled": true, "traeEnabled": false,
+                                   "openCodexEnabled": false, "usageCloudEnabled": false],
+                                  forName: UserDefaults.argumentDomain)
+        delegate.render()
+        let workBuddyMore = delegate.status.menu!.items.first { $0.title == "更多…" }?.submenu
+        let claudeImport = workBuddyMore?.item(withTitle: "导入 Claude Desktop 3P")
+        precondition(claudeImport?.target === delegate && claudeImport?.action == #selector(AppDelegate.importClaudeDesktop3P))
         settings.close()
         dateWindow.close()
         print("PASS: light/dark UI, label bounds, previous quota, clearing dates, and no hover tooltips throughout usage menus")
