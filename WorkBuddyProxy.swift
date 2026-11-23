@@ -58,7 +58,7 @@ private final class ChatCompletionCollector {
 
     func consume(_ data: Data) {
         pending += String(decoding: data, as: UTF8.self)
-        while let end = pending.firstIndex(of: "\n") {
+        while let end = pending.firstIndex(where: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }) {
             let line = String(pending[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
             pending.removeSubrange(...end)
             guard line.hasPrefix("data:") else { continue }
@@ -246,18 +246,28 @@ final class WorkBuddyProxy {
     }
 
     private func handleWorkBuddy(_ connection: NWConnection, _ request: ProxyRequest) {
+        let path = request.path == "/model" ? "/models" : String(request.path.dropFirst(workBuddyAPIPrefix.count))
+        let messages = request.method == "POST" && path == "/messages"
         do {
             guard routeState.workBuddy else {
-                sendJSON(connection, status: 404,
-                         ["error": ["message": "WorkBuddy 代理路由未启用", "type": "invalid_request_error"]])
+                let message = "WorkBuddy 代理路由未启用"
+                let error: [String: Any] = messages ? WorkBuddyMessages.error(message, type: "not_found_error") :
+                    ["error": ["message": message, "type": "invalid_request_error"]]
+                sendJSON(connection, status: 404, error)
                 return
             }
             guard request.headers["authorization"] == "Bearer " + workBuddyAPIKey ||
                     request.headers["x-api-key"] == workBuddyAPIKey else {
-                sendJSON(connection, status: 401, ["error": ["message": "API key mismatch", "type": "authentication_error"]])
+                let message = "API key mismatch"
+                let error: [String: Any] = messages ? WorkBuddyMessages.error(message, type: "authentication_error") :
+                    ["error": ["message": message, "type": "authentication_error"]]
+                sendJSON(connection, status: 401, error)
                 return
             }
-            let path = String(request.path.dropFirst(workBuddyAPIPrefix.count))
+            if messages {
+                handleWorkBuddyMessages(connection, request)
+                return
+            }
             if request.method == "GET", path == "/models" {
                 sendJSON(connection, ["object": "list", "data": try client.models().map(\.json), "has_more": false])
                 return
@@ -302,6 +312,57 @@ final class WorkBuddyProxy {
             }
         } catch {
             sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
+        }
+    }
+
+    private func handleWorkBuddyMessages(_ connection: NWConnection, _ request: ProxyRequest) {
+        let body: [String: Any]
+        do {
+            guard let source = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+                throw WorkBuddyError.message("Expected a JSON object")
+            }
+            body = try WorkBuddyMessages.chatBody(source)
+        } catch {
+            sendJSON(connection, status: 400, WorkBuddyMessages.error(error.localizedDescription, type: "invalid_request_error"))
+            return
+        }
+        let callerID = request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"]
+        let debug = ProxyDebugLog.begin(provider: "workbuddy", body: body, callerID: callerID)
+        let model = body["model"] as? String ?? "unknown"
+        let produce: (@escaping () -> Void, ((Data) -> Void)?, @escaping (Result<[String: Any], Error>) -> Void) -> Void = { start, emit, done in
+            let response = WorkBuddyMessagesResponse(model: model, emit: emit)
+            self.client.chat(body, debug: debug, session: CodeBuddyConversationSession(callerID: callerID),
+                             onStart: start, onData: { chunk in
+                debug?.observe(chunk)
+                response.consume(chunk)
+            }, completion: { error in
+                let result = Result {
+                    if let error { throw error }
+                    return try response.finish()
+                }
+                switch result {
+                case .success: debug?.finish(nil)
+                case .failure(let error): debug?.finish(error)
+                }
+                done(result)
+            })
+        }
+        if chatWantsStream(body) {
+            stream(connection, messagesErrors: true) { start, data, done in
+                produce(start, data) { result in
+                    switch result {
+                    case .success: done(nil)
+                    case .failure(let error): done(error)
+                    }
+                }
+            }
+        } else {
+            produce({}, nil) { result in
+                switch result {
+                case .success(let message): self.sendJSON(connection, message)
+                case .failure(let error): self.sendJSON(connection, status: 502, WorkBuddyMessages.error(error.localizedDescription))
+                }
+            }
         }
     }
 
@@ -519,7 +580,7 @@ final class WorkBuddyProxy {
     }
 
     // 两个上游共用同一段 SSE 框架：启动时写 200 头，随后逐块整编，最后补结束块。
-    private func stream(_ connection: NWConnection,
+    private func stream(_ connection: NWConnection, messagesErrors: Bool = false,
                         _ produce: (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
         var started = false
         let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -529,10 +590,20 @@ final class WorkBuddyProxy {
         }, { data in
             connection.send(content: Self.httpChunk(data), completion: .idempotent)
         }, { [weak self] error in
-            if let error, !started {
-                self?.sendJSON(connection, status: 500,
-                               ["error": ["message": error.localizedDescription, "type": "server_error"]])
-                return
+            if let error {
+                if messagesErrors {
+                    let body = WorkBuddyMessages.error(error.localizedDescription)
+                    if !started {
+                        self?.sendJSON(connection, status: 502, body)
+                        return
+                    }
+                    let event = WorkBuddyMessages.event("error", body)
+                    connection.send(content: Self.httpChunk(event), completion: .idempotent)
+                } else if !started {
+                    self?.sendJSON(connection, status: 500,
+                                   ["error": ["message": error.localizedDescription, "type": "server_error"]])
+                    return
+                }
             }
             connection.send(content: Data("0\r\n\r\n".utf8),
                             completion: .contentProcessed { _ in connection.cancel() })
@@ -557,6 +628,7 @@ final class WorkBuddyProxy {
 
     static func selfTest() {
         precondition(String(data: httpChunk(Data("abc".utf8)), encoding: .utf8) == "3\r\nabc\r\n")
+        WorkBuddyMessages.selfTest()
 
         // 按工具类型而非名称识别：普通 function 搜索工具仍由客户端 / MCP 执行。
         precondition(unsupportedSearchParameter([:]) == nil)
@@ -596,6 +668,14 @@ final class WorkBuddyProxy {
         precondition(call?["id"] as? String == "call_1")
         precondition((call?["function"] as? [String: String])?["arguments"] == "{}")
         precondition((result?["usage"] as? [String: Any])?["total_tokens"] as? Int == 3)
+        for newline in ["\n", "\r\n", "\r"] {
+            let framed = ChatCompletionCollector(model: "test")
+            for line in [#"data: {"choices":[{"delta":{"content":"你好"}}]}"#, "", "data: [DONE]", ""] {
+                framed.consume(Data((line + newline).utf8))
+            }
+            let choice = (framed.result()?["choices"] as? [[String: Any]])?.first
+            precondition((choice?["message"] as? [String: Any])?["content"] as? String == "你好")
+        }
         let failed = ChatCompletionCollector(model: "test")
         failed.consume(Data("data: {\"error\":{\"message\":\"upstream failed\"}}\n\n".utf8))
         precondition(failed.errorMessage == "upstream failed" && failed.result() == nil)
@@ -625,6 +705,7 @@ final class WorkBuddyProxy {
         precondition(!state.listenerNeeded)
 
         // 前缀判定：旧 /v1 别名不再属于 WorkBuddy，两个 provider 之间没有回退。
+        precondition(proxyRoute(for: "/model") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1/models") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1/chat/completions") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1") == .workBuddy)
@@ -681,7 +762,7 @@ enum ProxyRoute: Equatable {
 // 纯函数，便于脱离监听端口断言；handle 里按同一顺序使用。
 func proxyRoute(for path: String) -> ProxyRoute {
     if path == "/health" { return .health }
-    if proxyPathMatches(path, prefix: workBuddyAPIPrefix) { return .workBuddy }
+    if path == "/model" || proxyPathMatches(path, prefix: workBuddyAPIPrefix) { return .workBuddy }
     if proxyPathMatches(path, prefix: traeAPIPrefix) { return .trae }
     return .unknown
 }

@@ -356,11 +356,16 @@ final class WorkBuddyClient {
             throw WorkBuddyError.message(message)
         }
         onStart()
-        for try await line in bytes.lines {
-            // AsyncLineSequence 跳过空行；模型的每个 JSON data 行是一条 SSE 事件。
-            let separator = line.hasPrefix("data:") ? "\n\n" : "\n"
-            onData(Data((line + separator).utf8))
+        // bytes.lines 会丢弃空行；按原始字节转发以保留 SSE 事件边界。
+        var chunk = Data()
+        for try await byte in bytes {
+            chunk.append(byte)
+            if byte == 10 || byte == 13 {
+                onData(chunk)
+                chunk.removeAll(keepingCapacity: true)
+            }
         }
+        if !chunk.isEmpty { onData(chunk) }
     }
 
     /// 上游始终流式（便于多账号间切换与错误早发现）；`sendStream` 只决定代理如何回应客户端。

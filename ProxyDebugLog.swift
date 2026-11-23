@@ -96,7 +96,7 @@ final class ProxyDebugLog {
             if self.firstChunk == nil { self.firstChunk = receivedAt }
             self.bytes += data.count
             self.pending += String(decoding: data, as: UTF8.self)
-            while let end = self.pending.firstIndex(of: "\n") {
+            while let end = self.pending.firstIndex(where: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }) {
                 let line = String(self.pending[..<end])
                 self.pending.removeSubrange(...end)
                 guard line.hasPrefix("data:"),
@@ -167,11 +167,14 @@ final class ProxyDebugLog {
         let log = ProxyDebugLog(file: file)
         log.record("received", ["messages": [["role": "user", "content": "测试 prompt"]], "Authorization": "secret"])
         log.upstream(status: 500, errorBody: Data("{\"error\":{\"message\":\"test failure\"}}".utf8))
-        log.observe(Data("data: {\"error\":{\"message\":\"stream failure\"}}\n".utf8))
+        for (index, newline) in ["\n", "\r\n", "\r"].enumerated() {
+            log.observe(Data(("data: {\"error\":{\"message\":\"stream failure \(index)\"}}" + newline + newline).utf8))
+        }
         log.finish(nil)
         queue.sync {}
         let text = try String(contentsOf: file, encoding: .utf8)
         precondition(text.contains("测试 prompt") && text.contains("test failure") && text.contains("stream failure") && !text.contains("secret"))
+        for index in 0..<3 { precondition(text.contains("stream failure \(index)")) }
         let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
         precondition(permissions?.intValue == 0o600)
         let directoryPermissions = try FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber
