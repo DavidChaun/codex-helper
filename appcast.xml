@@ -3,6 +3,23 @@
     <channel>
         <title>Codex Helper</title>
         <item>
+            <title>1.11.1</title>
+            <pubDate>Mon, 23 Nov 2026 18:26:32 +0800</pubDate>
+            <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.11.1</link>
+            <sparkle:version>73</sparkle:version>
+            <sparkle:shortVersionString>1.11.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Helper 1.11.1
+
+- 移除 `POST /workbuddy/v1/search` 与 `POST /workbuddy/v1/fetch` 两个端点，以及背后的整个搜索客户端。这两个端点返回的内容质量不稳定，实际价值有限。
+- 代理现在只负责模型转发：`/health`、`/model`、`/workbuddy/v1/models`、`/workbuddy/v1/chat/completions`、`/workbuddy/v1/messages`。
+
+支持 Apple Silicon（M 系列）Mac，macOS 15 或以上。
+]]></description>
+            <enclosure url="https://github.com/DavidChaun/codex-helper/releases/download/v1.11.1/Codex-Helper-Swift-1.11.1.zip" length="2539604" type="application/octet-stream" sparkle:edSignature="lWqdY6TxfYJGVW+7JYyWhwjG3M0JS5JkGMx6in2hzXqKPXQ7LMleNK9URq4KmusIk5aO+zAQKFZnz1XNTPYdCw=="/>
+        </item>
+        <item>
             <title>1.11.0</title>
             <pubDate>Mon, 23 Nov 2026 18:01:17 +0800</pubDate>
             <link>https://github.com/DavidChaun/codex-helper/releases/tag/v1.11.0</link>
