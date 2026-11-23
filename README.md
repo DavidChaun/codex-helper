@@ -20,23 +20,23 @@
 - 金额按 [OpenAI 官方 API 单价](https://developers.openai.com/api/docs/pricing)估算（2026-11-01 核对），缓存写入采用默认 30 分钟价格；按订阅使用场景折算，不加收超过 272K 输入的长上下文附加费（[GPT-6.1 Sol 官方订阅说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)）；历史和 iCloud 合并用量均按此规则重新估算，无需改写原始 token 记录。读取日志中「已应用设置」事件的 `thread_settings.service_tier`：`default` / `standard` 按标准价，`fast` / `priority` 按标准价 ×2，分别应用于输入、缓存、输出和其中推理费用，原始 token 数量不变；按模型和档位分别汇总，`fast` 与 `priority` 合并为 Fast，标准、Fast、未知各占一行，一级金额为各组之和。
 - 当前确认 GPT-6 Astra、GPT-6.1 Sol / Terra、GPT-6 Sol / Luna、GPT-5.6 Sol / Terra / Luna；未确认单价的模型（包括第三方模型）、未记录或不支持的档位，以及缺少计价所需 token 分项的记录，统一按 $0 计入。历史档位以日志事件为准，不用当前配置推测过去。金额是 API 参考价，不按套餐额度的 2.5 倍计算，未计地区附加费和工具费用；日志未记录的服务端回退档位、其他缓存寿命无法还原，不代表订阅实际账单。
 - Token 统计只读 `$CODEX_HOME/sessions` 与 `archived_sessions`（默认 `~/.codex`），同时读取桌面应用后台用量日志；也可读取下述 OpenCodex 用量，不上传会话内容；按每次请求的事件时间归入对应统计区间，日期和周期起止时间以本机时区展示。`codex-auto-review` 完全排除，不显示条目，也不计入任何区间的 token、缓存分项或费用；未确认单价的其他模型仍保留并按 $0 估算。模型标签不能用于还原代理背后的真实模型，也不是官方计费账单。清理、缺失或未写入本机的历史不会被统计；无法读取的文件及缺失/异常用量会在菜单提示。读取在后台执行，已读文件只处理追加内容。
-- 默认每 10 秒刷新 Codex 额度，WorkBuddy、Trae 仅在启用后刷新。菜单中的「设置…」可填写 5–3600 秒，并提供「启用 WorkBuddy 功能」「启用 Trae 代理」「启用 OpenCodex 功能」三个开关，未保存过设置时默认均不勾选，已有明确保存的选择继续保留。OpenCodex 不勾选时不检测安装或运行状态，隐藏其安装提示和相关菜单；保存后会提示成功并将按钮置灰，修改设置后按钮重新启用。关闭「启用 Trae 代理」会立即停用 Trae 路由、隐藏 Trae 菜单区块并清空其临时状态，WorkBuddy 不受影响。唤醒 Mac 后自动刷新；上次请求尚未结束时不会重复发起。
+- 默认每 10 秒刷新 Codex 额度，WorkBuddy 仅在启用后刷新。菜单中的「设置…」可填写 5–3600 秒，并提供「启用 WorkBuddy 功能」「启用 OpenCodex 功能」两个开关，未保存过设置时默认均不勾选，已有明确保存的选择继续保留。OpenCodex 不勾选时不检测安装或运行状态，隐藏其安装提示和相关菜单；保存后会提示成功并将按钮置灰，修改设置后按钮重新启用。唤醒 Mac 后自动刷新；上次请求尚未结束时不会重复发起。
 - 读取失败时显示 ⚠，保留并明确标记上次结果，不会将未知额度显示为 0%。
 - 当前菜单栏优先显示 `codex` 额度；接口返回多个额度组时，全部列在菜单中。
 - 点击「退出 Codex Helper」关闭。
-- 设置中启用 OpenCodex 功能后，状态以单行 `OpenCodex Running` 或 `OpenCodex Stop` 显示。一级操作保留「开启代理」「关闭代理」「控制台」；「更多…」提供「配置 / 刷新 WorkBuddy 代理」（启用 WorkBuddy 功能时）与「配置 / 刷新 Trae 代理」（启用 Trae 代理时），两者都会开启自己的路由、写入 `openai-chat` provider、同步模型（两家 provider 各自动态发现模型），重复点击只刷新配置并保留既有模型选择，首次配置才启用该家的模型。将配置导出到 `~/Downloads/OCX_CONF.json`，或选择 JSON 文件确认后导入。
+- 设置中启用 OpenCodex 功能后，状态以单行 `OpenCodex Running` 或 `OpenCodex Stop` 显示。一级操作保留「开启代理」「关闭代理」「控制台」；「更多…」提供「配置 / 刷新 WorkBuddy 代理」（启用 WorkBuddy 功能时），会开启 WorkBuddy 路由、写入 `openai-chat` provider、同步模型（provider 自动发现模型），重复点击只刷新配置并保留既有模型选择，首次配置才启用该家的模型。将配置导出到 `~/Downloads/OCX_CONF.json`，或选择 JSON 文件确认后导入。
 - 启用 WorkBuddy 功能后，可在菜单中启动 `127.0.0.1:58100` 的 Swift Chat Completions 代理。WorkBuddy 图形界面无需运行，但 `/Applications/WorkBuddy.app` 必须已安装且当前账户已登录。
 - 代理提供 `/health`、`/workbuddy/v1/models`、`/workbuddy/v1/chat/completions`，WorkBuddy 的本机 API Key 为 `workbuddy-local`。OpenCodex 的 `workbuddy` provider 使用 `openai-chat` adapter，并指向 `http://127.0.0.1:58100/workbuddy/v1`。旧的无前缀 `/v1` 别名已删除，升级后需重新点击「配置 / 刷新 WorkBuddy 代理」写入新地址。
 - 代理按 `workbuddy-cliproxy` 的实现调用 WorkBuddy `/v2/chat/completions`，上游保持强制流式；客户端 `stream: true` 返回 SSE，`stream: false` 或省略时返回标准 Chat Completion JSON，方便接入其他软件。代理还会替换两句上游拦截模板，并将 hy3 系列固定为 `reasoning_effort=high`。
 - Anthropic 客户端可直连 `POST /workbuddy/v1/messages`。如果客户端自动追加 `/v1/messages`，将 Base URL 设为 `http://127.0.0.1:58100/workbuddy`，用同一个本机 API Key 和 `/workbuddy/v1/models` 中的模型 ID。此入口由 Codex Helper 直接转换协议，支持流式与非流式响应，以及由客户端执行的自定义工具。
 - 在 WorkBuddy 的「更多…」里点「导入 Claude Desktop 3P」，会启动本机代理并把 WorkBuddy 设为 Claude Desktop 的当前配置。重复导入会更新同一个条目，重新打开 Claude Desktop 后生效。选择器只显示 DeepSeek V4.1 Flash，支持选择 effort。代理将 Claude Desktop 的模型别名和所选档位转成 WorkBuddy 的 `deepseek-v4.1-flash` 和 `reasoning_effort`。
+- 同一「更多…」里的「导入到 T3 Code」把 WorkBuddy 接进 T3 Code 的 Pi provider：写 `~/.pi/agent/models.json` 的 `workbuddy` provider（本机代理地址、`workbuddy-local`、按上游能力标注的上下文/图像/推理档位，只导对话模型），并在 `~/.t3/userdata/settings.json` 写入 `workbuddy` 实例（`driver: pi`、`binaryPath` 指向已有的 Pi，缺失时用 npm 装到 `~/.pi/workbuddy-runtime`、`launchArgs: --approve`）。两处都只替换 `workbuddy` 自己，其他 provider、实例和其他设置原样保留；重复导入只刷新模型列表。T3 Code 监听 settings.json，保存后立即生效，重新打开最稳。
 - 其他本机客户端可用 `GET http://127.0.0.1:58100/model` 读取 WorkBuddy 模型列表。带上 `Authorization: Bearer <API Key>` 或 `x-api-key`，模型条目在响应的 `data` 数组中。
 - 模型请求按 **CodeBuddy CLI 2.183.0 实测头部**逐项复刻（抓包对照见 `codebuddy-request-parity.md`）：`X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID`、`X-Root-Request-ID` 四件套按会话生成（会话 ID 为 UUIDv7，其余为不带连字符的 32 位十六进制；首轮 request ID 等于 root ID，自动续轮、重试和换号保持会话及 root 不变）；`X-Agent-Intent/Runtime/Purpose/Type`、`X-Private-Data`、`x-codebuddy-request`、`x-stainless-*` 六项与 `traceparent`/`b3`/`X-B3-*`/`X-Trace-ID`/`baggage` 一并发送。调用方传入 32 位十六进制 `X-Request-ID` 时直接作为 trace id，否则随机生成。请求体补齐 `cache_retention: "long"`、`reasoning_summary: "auto"`、`stream_options.include_usage` 与 `extra_vars.harnessMetadata`（调用方显式给出的值不覆盖）。
 - 与真实 CLI 的两处**反向偏差已收敛**：模型请求不再发送 `Origin`/`Referer`（真实 CLI 是 Node 进程，不发浏览器头），也不再在每个模型请求里附带 `X-Refresh-Token`（模型请求无需携带刷新凭据）。`User-Agent`/`X-IDE-Version` 从硬编码的 `2.63.2` 更新为 `2.183.0`；CLI 由 ACP Registry 自动升级后需同步修改 `WorkBuddyClient.swift` 的 `codeBuddyCLIVersion`。
-- 同一个 `127.0.0.1:58100` 监听同时提供 Trae：`GET /trae/v1/models`、`POST /trae/v1/chat/completions`，本机 API Key 为 `trae-local`，OpenCodex 的 `trae` provider 指向 `http://127.0.0.1:58100/trae/v1`。登录态从 Trae 账号池取用（见下节），模型表来自 `get_detail_param`，对话走 `llm_utils_chat`（`function=solo_work_lite`）并把 `output.response`/`reasoning_content`/`tool_calls` 转成 OpenAI 格式；客户端 `stream: true` 返回 SSE，`stream: false` 或省略时返回 Chat Completion JSON。Trae 图形界面无需运行，但必须已登录 `/Applications/TRAE SOLO CN.app`；登录态失效会由上游 401 暴露，需要在 Trae 内重新登录。该 `trae` provider 不会写 `max_tokens` 默认值，只转发请求里显式给定的值。
-- 两条路由各自独立开关：WorkBuddy 与 Trae 在自己的菜单区块分别显示 `Running` / `Stop`，并在各自「更多…」中提供默认勾选的「启用代理」。关闭其中一个只停用它的路由（该前缀返回 404），另一个照常服务；两个都关闭时才停掉 listener。路径不匹配任何前缀时一律 404，不会在两家 provider 之间回退。`/health` 始终可用，并回报两条路由的开关状态。
-- 共享代理的启动条件：WorkBuddy 功能开启且已装 CLI，或 Trae 功能开启且本机装了 `/Applications/TRAE SOLO CN.app` / 留有 Trae 登录态，两者满足其一即可。
-- WorkBuddy 一级菜单依次显示代理状态、当前账号剩余积分、账号池、模型列表和「更多…」。余额直接使用 WorkBuddy 新版 `get-user-resource-summary` 口径；「更多…」包含代理开关、curl 示例、签到、自动签到和刷新。Trae 区块采用相同布局。点击聊天模型会发送一条简短请求测速，菜单保持打开并显示完整响应耗时：低于 2 秒绿色、低于 5 秒棕色，其余红色；请求失败标红，测速会消耗少量积分。
+- WorkBuddy 在自己的菜单区块显示 `Running` / `Stop`，并在「更多…」中提供默认勾选的「启用代理」。关闭后该前缀返回 404；路径不匹配任何前缀时一律 404。`/health` 始终可用，并回报路由开关状态。
+- 代理的启动条件：WorkBuddy 功能开启且已装 CLI。
+- WorkBuddy 一级菜单依次显示代理状态、当前账号剩余积分、账号池、模型列表和「更多…」。余额直接使用 WorkBuddy 新版 `get-user-resource-summary` 口径；「更多…」包含代理开关、导入 Claude Desktop 3P、导入到 T3 Code、curl 示例、签到、自动签到和刷新。点击聊天模型会发送一条简短请求测速，菜单保持打开并显示完整响应耗时：低于 2 秒绿色、低于 5 秒棕色，其余红色；请求失败标红，测速会消耗少量积分。
 - 开启代理执行 `ocx restart`、`ocx restore back`、`ocx sync --restart-codex`；关闭代理先恢复原生配置并重启 Codex app-server，再执行 `ocx stop`、`ocx restore`。切换时会刷新 model list，也可能中断正在运行的 Codex 任务。
 - 「控制台」调用 `ocx gui`。
 
@@ -46,7 +46,7 @@ GPT 文本模型费率由仓库每天从 [LiteLLM 公共定价目录](https://gi
 
 ## 工具与搜索能力
 
-WorkBuddy 和 Trae 两条 Chat Completions 代理均支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。默认由客户端或 MCP 服务执行模型返回的 `tool_calls`；WorkBuddy 可显式开启下方的自动工具。两条代理均不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
+WorkBuddy Chat Completions 代理支持普通 `type: "function"` 搜索工具（包括以 function 形式接入的 MCP 工具）。默认由客户端或 MCP 服务执行模型返回的 `tool_calls`；WorkBuddy 可显式开启下方的自动工具。代理不接入 DeepSeek Search / Fetch API。普通 function 工具即使命名为 `web_search`、`WebSearch`、`web_fetch` 或 `mcp__search`，也不会仅因名称而被拒绝。
 
 两条代理都不支持服务端内置 `web_search` / `web_fetch`。请求的 `tools` 或 `tool_choice` 使用这些类型（含 `web_search_preview`、`web_search_20250305` 等下划线后缀变体），或传入非 null 的 `web_search_options` 时，统一在发送上游请求前返回 HTTP 400，错误 `code` 为 `unsupported_server_search`，`param` 指出不支持的字段。不会静默删除工具、忽略搜索配置或返回假成功；流式与非流式请求规则相同。需要搜索时，请关闭客户端的服务端内置搜索配置，改用客户端 / MCP 执行的普通 function 搜索工具。
 
@@ -78,23 +78,13 @@ CodeBuddy 的 `WebSearch` / `WebFetch` 是普通 function 工具，但**执行�
 
 鉴权头不记录；结构化凭据字段会隐藏，Base64 图片／文件／音频内容省略。目录与文件权限分别为 `0700` / `0600`。**文本中仍可能含有私人对话、代码或敏感信息**，不要未经检查分享日志。关闭开关立即停止写入，已有文件不会自动删除，请在分析后手动清理。写盘失败会自动关闭 Debug Mode 并提示，不影响代理请求。
 
-## Trae 多账号行为
-
-Trae 代理保留通过共同入口校验的工具顺序与定义，仅将 function 工具的参数 Schema 转成上游要求的 JSON 字符串。转发 `parallel_tool_calls`，但是否实际支持由上游决定。调用方明确指定 `tool_choice: "none"` 时不发送工具列表，因为上游实测会忽略该限制。
-
-Trae 使用独立账号池：元数据和 Token 明文保存在 `~/Library/Application Support/Codex Helper/trae-accounts.plist`（权限 `0600`），与 WorkBuddy 完全隔离，两边切号互不影响。
-
-选择「Trae 账号池 → 保存当前 Trae 登录账号」，会解密当前 `storage.json` 并按 `userId` 幂等写入：同一账号只覆盖 Token 与展示名，不产生重复条目。首次使用且池为空时，请求会自动导入当前登录，无需手动点一次。菜单中勾选即设为优先账号。
-
-取用顺序为：优先账号在前，其余按 `lastUsedAt` 从旧到新。仅在请求尚未开始输出、且上游返回 HTTP 401/403/429/5xx 时才尝试下一个账号；SSE 一旦开始输出就绝不切换，避免同一条回答混入两个账号的状态。Trae 没有已知的 Token 刷新接口，因此不做自动刷新，也不臆造余额与限流冷却：Token 过期后请在 Trae 内重新登录，再点一次「保存当前 Trae 登录账号」。
-
 使用本机 Codex CLI 的当前登录状态，通过官方 `account/rateLimits/read` 接口读取账户额度。应用不读取或保存 Token，不发起模型任务，也不消费额度重置次数；子进程关闭 analytics。需要 Codex 使用 ChatGPT 账户登录并能访问网络。第三方模型服务的余额不在此接口范围内。
 
 检测到 OpenCodex 包装器时，额度查询优先调用其保留的原生 Codex 可执行文件，避免定时查询意外启动已关闭的代理。「打开 OpenCodex Dashboard」本身会在代理未运行时按 OpenCodex 的标准行为启动代理。
 
 若希望开机自动运行，可先将应用移到固定目录，再在「系统设置 → 通用 → 登录项」中添加该应用。
 
-源码按 `CodexQuotaBar.swift`、`CodexQuotaHistory.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`CodexResponseTiming.swift`、`CodexBackgroundUsage.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift`、`TraeAccountPool.swift`、`TraeClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载两条路由共用的 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行两条代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` / `CODEX_HELPER_TRAE=0` 单独关闭某条路由。
+源码按 `CodexQuotaBar.swift`、`CodexQuotaHistory.swift`、`CodexTokenUsage.swift`、`CodexUsageSync.swift`、`CodexResponseTiming.swift`、`CodexBackgroundUsage.swift`、`WorkBuddyAccountPool.swift`、`WorkBuddyClient.swift` 和 `WorkBuddyProxy.swift` 分层（`WorkBuddyProxy.swift` 承载代理 listener）。安装 Xcode Command Line Tools 后，在此目录运行 `sh build.sh` 即可重新编译并运行内置检查；生成的 `.build/` 和 `Codex Helper.app/` 不纳入 Git。`--check` 验证 Codex 额度，`--check-token-usage` 只读查询官方周额度周期并检查本地 Token 分类用量（周期查询失败仍可统计今日），`--check-workbuddy` 验证 WorkBuddy 积分和模型，`--serve-proxy` 可单独运行代理路由；验证时可用环境变量 `CODEX_HELPER_PROXY_PORT` 换端口、`CODEX_HELPER_WORKBUDDY=0` 关闭路由。
 
 参考：[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)。
 

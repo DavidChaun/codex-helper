@@ -20,6 +20,5 @@ swiftc -swift-version 5 -target arm64-apple-macosx15.0 -module-cache-path .build
   -F Vendor/Sparkle -framework AppKit -framework Network -framework Sparkle \
   -Xlinker -rpath -Xlinker "$(pwd)/Vendor/Sparkle" \
   .build/ui-check/Views.swift Tests/UI.swift CodexQuotaHistory.swift CodexTokenUsage.swift CodexUsageSync.swift CodexResponseTiming.swift CodexBackgroundUsage.swift \
-  WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddySearch.swift WorkBuddyProxy.swift WorkBuddyMessages.swift ProxyDebugLog.swift \
-  TraeClient.swift TraeAccountPool.swift -o .build/ui-check/check-ui
+  WorkBuddyAccountPool.swift WorkBuddyClient.swift WorkBuddySearch.swift WorkBuddyProxy.swift WorkBuddyMessages.swift ProxyDebugLog.swift -o .build/ui-check/check-ui
 .build/ui-check/check-ui

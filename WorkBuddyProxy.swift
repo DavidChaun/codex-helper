@@ -9,13 +9,11 @@ private var proxyPort: UInt16 {
 let workBuddyAPIKey = "workbuddy-local"
 let workBuddyAPIPrefix = "/workbuddy/v1"
 
-// 两条路由的纯状态：listener 只在任一上游需要时启动，关闭其中一个不影响另一个。
-// 单独抽出来是为了能脱离 58100 端口直接断言（见 selfTest）。
+// 路由开关决定 listener 是否要起。单独抽出来是为了能脱离 58100 端口直接断言（见 selfTest）。
 struct ProxyRouteState: Equatable {
     var workBuddy = false
-    var trae = false
 
-    var listenerNeeded: Bool { workBuddy || trae }
+    var listenerNeeded: Bool { workBuddy }
 }
 
 private struct ProxyRequest {
@@ -127,36 +125,26 @@ final class WorkBuddyProxy {
     private let queue = DispatchQueue(label: "local.codex-helper.workbuddy.proxy", qos: .utility)
     private let client: WorkBuddyClient
     private let searchClient: WorkBuddySearchClient
-    private let traeClient: TraeClient
     private let autoToolsEnabled: () -> Bool
     private var listener: NWListener?
     private var routeState = ProxyRouteState()
     private(set) var isRunning = false
 
-    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient, traeClient: TraeClient,
+    init(client: WorkBuddyClient, searchClient: WorkBuddySearchClient,
          autoToolsEnabled: @escaping () -> Bool = { ProcessInfo.processInfo.environment["CODEX_HELPER_AUTO_TOOLS"] == "1" }) {
         self.client = client
         self.searchClient = searchClient
-        self.traeClient = traeClient
         self.autoToolsEnabled = autoToolsEnabled
     }
 
     var isWorkBuddyRunning: Bool { routeState.workBuddy && isRunning }
-    var isTraeRunning: Bool { routeState.trae && isRunning }
     var isWorkBuddyRouteEnabled: Bool { routeState.workBuddy }
-    var isTraeRouteEnabled: Bool { routeState.trae }
 
     func setWorkBuddyRunning(_ running: Bool) throws {
         routeState.workBuddy = running
         try updateListener()
     }
 
-    func setTraeRunning(_ running: Bool) throws {
-        routeState.trae = running
-        try updateListener()
-    }
-
-    // 两个路由都关闭时才真正停 listener。
     private func updateListener() throws {
         if routeState.listenerNeeded { try start() } else { stop() }
     }
@@ -233,13 +221,9 @@ final class WorkBuddyProxy {
         switch proxyRoute(for: request.path) {
         case .health:
             sendJSON(connection, ["status": "ok", "app": "Codex Helper", "port": Int(proxyPort),
-                                  "workbuddy": routeState.workBuddy, "trae": routeState.trae])
-        // 同一个 listener 下共用 HTTP/SSE 管线，按前缀分流到各自上游与 API Key；
-        // 前缀不匹配的一律 404，绝不在两个 provider 之间回退。
+                                  "workbuddy": routeState.workBuddy])
         case .workBuddy:
             handleWorkBuddy(connection, request)
-        case .trae:
-            handleTrae(connection, request)
         case .unknown:
             sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
         }
@@ -369,7 +353,7 @@ final class WorkBuddyProxy {
 
     // MARK: - 原生搜索工具
 
-    static let unsupportedSearchMessage = "WorkBuddy / Trae 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
+    static let unsupportedSearchMessage = "WorkBuddy 代理不支持服务端 web_search / web_fetch 或 web_search_options。请使用 type=function 的普通搜索工具，由客户端或 MCP 服务执行并回传结果。"
     /// 自动续轮上限，避免模型反复调用搜索导致无限循环。
     private static let maxAutoToolRounds = 4
 
@@ -519,36 +503,6 @@ final class WorkBuddyProxy {
         return formatter.string(from: Date())
     }
 
-    private func handleTrae(_ connection: NWConnection, _ request: ProxyRequest) {
-        do {
-            guard routeState.trae else {
-                sendJSON(connection, status: 404,
-                         ["error": ["message": "Trae 代理路由未启用", "type": "invalid_request_error"]])
-                return
-            }
-            guard request.headers["authorization"] == "Bearer " + TraeClient.apiKey ||
-                    request.headers["x-api-key"] == TraeClient.apiKey else {
-                sendJSON(connection, status: 401, ["error": ["message": "API key mismatch", "type": "authentication_error"]])
-                return
-            }
-            let path = String(request.path.dropFirst(traeAPIPrefix.count))
-            if request.method == "GET", path == "/models" {
-                sendJSON(connection, ["object": "list", "data": try traeClient.models().map(\.json), "has_more": false])
-                return
-            }
-            guard request.method == "POST", path == "/chat/completions",
-                  let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
-                sendJSON(connection, status: 404, ["error": ["message": "Not found", "type": "invalid_request_error"]])
-                return
-            }
-            let debug = ProxyDebugLog.begin(provider: "trae", body: body,
-                                            callerID: request.headers["x-request-id"] ?? request.headers["x-ocx-request-id"])
-            chat(connection, body, debug: debug) { self.traeClient.chat(body, debug: debug, onStart: $0, onData: $1, completion: $2) }
-        } catch {
-            sendJSON(connection, status: 500, ["error": ["message": error.localizedDescription, "type": "server_error"]])
-        }
-    }
-
     private func chat(_ connection: NWConnection, _ body: [String: Any], debug: ProxyDebugLog?,
                       _ upstream: @escaping (@escaping () -> Void, @escaping (Data) -> Void, @escaping (Error?) -> Void) -> Void) {
         if let parameter = unsupportedSearchParameter(body) {
@@ -683,47 +637,28 @@ final class WorkBuddyProxy {
         let truncated = ChatCompletionCollector(model: "test")
         truncated.consume(Data("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n".utf8))
         precondition(truncated.result() == nil)
-        var trae = TraeStreamTranslator(model: "glm-test")
-        let traeResult = ChatCompletionCollector(model: "fallback")
-        for line in ["event:output", "data:{\"response\":\"OK\"}",
-                     "event:done", "data:{\"finish_reason\":\"stop\"}"] {
-            if let chunk = trae.consume(line) { traeResult.consume(chunk) }
-        }
-        if let tail = trae.finish() { traeResult.consume(tail) }
-        let traeChoice = (traeResult.result()?["choices"] as? [[String: Any]])?.first
-        precondition((traeChoice?["message"] as? [String: Any])?["content"] as? String == "OK")
-
-        // 路由状态互不影响：关一个不影响另一个，两个都关才停 listener。
+        // 路由状态：关掉后 listener 停，重新开启重新起。
         var state = ProxyRouteState()
         precondition(!state.listenerNeeded)
         state.workBuddy = true
-        precondition(state.listenerNeeded && !state.trae)
-        state.trae = true
-        precondition(state.workBuddy && state.trae)
+        precondition(state.listenerNeeded)
         state.workBuddy = false
-        precondition(state.listenerNeeded && !state.workBuddy && state.trae)
-        state.trae = false
         precondition(!state.listenerNeeded)
 
-        // 前缀判定：旧 /v1 别名不再属于 WorkBuddy，两个 provider 之间没有回退。
+        // 前缀判定：旧 /v1 别名不再属于 WorkBuddy，未登记的前缀一律 unknown。
         precondition(proxyRoute(for: "/model") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1/models") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1/chat/completions") == .workBuddy)
         precondition(proxyRoute(for: "/workbuddy/v1") == .workBuddy)
-        precondition(proxyRoute(for: "/trae/v1/models") == .trae)
-        precondition(proxyRoute(for: "/trae/v1/chat/completions") == .trae)
-        precondition(proxyRoute(for: "/trae/v1") == .trae)
         precondition(proxyRoute(for: "/health") == .health)
         precondition(proxyRoute(for: "/v1/models") == .unknown)
         precondition(proxyRoute(for: "/v1/chat/completions") == .unknown)
         // 前缀边界：只有 / 分隔的后继才算命中，v1x 之类必须落到 unknown。
-        precondition(proxyRoute(for: "/trae/v1x") == .unknown)
-        precondition(proxyRoute(for: "/trae/v1x/models") == .unknown)
         precondition(proxyRoute(for: "/workbuddy/v1x") == .unknown)
         precondition(proxyRoute(for: "/workbuddy/v1x/models") == .unknown)
         precondition(proxyRoute(for: "/workbuddy/v1abc/chat/completions") == .unknown)
         precondition(proxyRoute(for: "/workbuddy/v10") == .unknown)
-        precondition(proxyRoute(for: "/trae") == .unknown)
+        precondition(proxyRoute(for: "/trae/v1") == .unknown)
         precondition(proxyRoute(for: "/healthz") == .unknown)
         precondition(proxyRoute(for: "/") == .unknown)
 
@@ -757,18 +692,17 @@ final class WorkBuddyProxy {
 }
 
 enum ProxyRoute: Equatable {
-    case health, workBuddy, trae, unknown
+    case health, workBuddy, unknown
 }
 
 // 纯函数，便于脱离监听端口断言；handle 里按同一顺序使用。
 func proxyRoute(for path: String) -> ProxyRoute {
     if path == "/health" { return .health }
     if path == "/model" || proxyPathMatches(path, prefix: workBuddyAPIPrefix) { return .workBuddy }
-    if proxyPathMatches(path, prefix: traeAPIPrefix) { return .trae }
     return .unknown
 }
 
-// 前缀必须落在路径边界上：/trae/v1 与 /trae/v1/models 属于 Trae，/trae/v1x 不属于任何 provider。
+// 前缀必须落在路径边界上：/workbuddy/v1 与 /workbuddy/v1/models 命中，/workbuddy/v1x 不命中。
 func proxyPathMatches(_ path: String, prefix: String) -> Bool {
     path == prefix || path.hasPrefix(prefix + "/")
 }

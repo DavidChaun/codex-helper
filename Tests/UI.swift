@@ -7,14 +7,14 @@ struct UICheck {
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
         let defaults = UserDefaults(suiteName: "local.codex.helper.ui-check")!
-        defaults.setVolatileDomain(["workBuddyEnabled": false, "traeEnabled": false,
-                                   "openCodexEnabled": false, "usageCloudEnabled": false],
+        defaults.setVolatileDomain(["workBuddyEnabled": false, "openCodexEnabled": false,
+                                   "usageCloudEnabled": false],
                                   forName: UserDefaults.argumentDomain)
         delegate.featureDefaults = defaults
         delegate.showSettings()
         delegate.showTokenDateRange()
         let settings = delegate.settingsWindow!
-        precondition([delegate.workBuddyEnabledButton, delegate.traeEnabledButton,
+        precondition([delegate.workBuddyEnabledButton,
                       delegate.openCodexEnabledButton, delegate.usageCloudEnabledButton].allSatisfy {
             $0?.state == .off && $0?.action == #selector(AppDelegate.settingsChanged)
         })
@@ -74,8 +74,8 @@ struct UICheck {
             unreadableFiles: 0, skippedEvents: 0,
             devices: [CodexUsageDevice(id: UUID().uuidString, name: "Test Mac", updated: now)],
             syncMessage: "iCloud · 已读取 2 台设备的数据", previousQuotaCycle: previous)
-        defaults.setVolatileDomain(["workBuddyEnabled": false, "traeEnabled": false,
-                                   "openCodexEnabled": false, "usageCloudEnabled": true],
+        defaults.setVolatileDomain(["workBuddyEnabled": false, "openCodexEnabled": false,
+                                   "usageCloudEnabled": true],
                                   forName: UserDefaults.argumentDomain)
         delegate.setUsageForUICheck(snapshot, range: custom)
         delegate.status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -165,13 +165,28 @@ struct UICheck {
         delegate.clearTokenDateRange()
         precondition(!delegate.status.menu!.items.contains { $0.title.hasPrefix("同周期查询") || $0.title.hasPrefix("自选区间") })
         precondition(delegate.status.menu!.items.contains { $0.title.hasPrefix("当前周额度") })
-        defaults.setVolatileDomain(["workBuddyEnabled": true, "traeEnabled": false,
-                                   "openCodexEnabled": false, "usageCloudEnabled": false],
+        defaults.setVolatileDomain(["workBuddyEnabled": true, "openCodexEnabled": false,
+                                   "usageCloudEnabled": false],
                                   forName: UserDefaults.argumentDomain)
         delegate.render()
         let workBuddyMore = delegate.status.menu!.items.first { $0.title == "更多…" }?.submenu
         let claudeImport = workBuddyMore?.item(withTitle: "导入 Claude Desktop 3P")
         precondition(claudeImport?.target === delegate && claudeImport?.action == #selector(AppDelegate.importClaudeDesktop3P))
+        let t3Import = workBuddyMore?.item(withTitle: "导入到 T3 Code")
+        precondition(t3Import?.target === delegate && t3Import?.action == #selector(AppDelegate.importWorkBuddyToT3Code))
+        precondition(t3Import?.isEnabled == true)
+        let moreTitles = workBuddyMore!.items.map(\.title)
+        precondition(moreTitles.firstIndex(of: "导入 Claude Desktop 3P")! + 1 == moreTitles.firstIndex(of: "导入到 T3 Code")!, "T3 Code import sits next to the Claude Desktop import")
+        delegate.t3CodeBusy = true
+        delegate.render()
+        precondition(delegate.status.menu!.items.first { $0.title == "更多…" }?.submenu?
+            .items.contains { $0.title.hasPrefix("导入到 T3 Code") || $0.title.hasPrefix("正在导入到 T3 Code") } == true,
+                      "Import stays reachable while running")
+        let busyItem = delegate.status.menu!.items.first { $0.title == "更多…" }?.submenu?
+            .items.first { $0.action == #selector(AppDelegate.importWorkBuddyToT3Code) }
+        precondition(busyItem?.isEnabled == false, "Import is disabled while running")
+        delegate.t3CodeBusy = false
+        delegate.render()
         settings.close()
         dateWindow.close()
         print("PASS: light/dark UI, label bounds, previous quota, clearing dates, and no hover tooltips throughout usage menus")

@@ -154,6 +154,164 @@ func importWorkBuddyClaudeDesktop(port: Int, library: URL = FileManager.default.
     }
 }
 
+// T3 Code 的 WorkBuddy provider 走 Pi driver：写 Pi 的 models.json，再登记一个 pi 实例。
+let t3CodeAppPaths = ["/Applications/T3 Code (Beta).app", "/Applications/T3 Code.app"]
+let t3PiRuntimePackage = "@earendil-works/pi-coding-agent"
+var t3CodeInstalled: Bool {
+    t3CodeAppPaths.contains { FileManager.default.fileExists(atPath: $0) }
+}
+
+func t3CodeStateURL(base: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".t3")) -> URL {
+    base.appendingPathComponent("userdata/settings.json")
+}
+
+/// 把代理返回的 WorkBuddy 模型转成 Pi 的 models.json 条目。
+/// 只保留对话模型，并按上游能力标注上下文和推理档位。
+func piWorkBuddyModels(_ models: [WorkBuddyModel]) -> [[String: Any]] {
+    models.filter { $0.type == "chat" }.map { model in
+        var entry: [String: Any] = ["id": model.id, "name": model.name]
+        if let context = model.maxInput, context > 0 { entry["contextWindow"] = context }
+        if let output = model.maxOutput, output > 0 { entry["maxTokens"] = output }
+        entry["reasoning"] = model.reasoning
+        if model.images { entry["input"] = ["text", "image"] }
+        if model.reasoning { entry["thinkingLevelMap"] = ["max": "max"] }
+        return entry
+    }
+}
+
+func piWorkBuddyProvider(models: [WorkBuddyModel]) -> [String: Any] {
+    [
+        "baseUrl": "http://127.0.0.1:\(WorkBuddyProxy.port)\(workBuddyAPIPrefix)",
+        "api": "openai-completions", "apiKey": workBuddyAPIKey, "authHeader": true,
+        "models": piWorkBuddyModels(models),
+    ]
+}
+
+/// 合并写 models.json：只替换 workbuddy provider，保留其他 provider 和未知字段。
+func writePiWorkBuddyModels(_ models: [WorkBuddyModel], directory: URL) throws {
+    let files = FileManager.default
+    let url = directory.appendingPathComponent("models.json")
+    var root: [String: Any] = [:]
+    if files.fileExists(atPath: url.path) {
+        guard let existing = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            throw WorkBuddyError.message("Pi 的 models.json 格式无效：\(url.path)")
+        }
+        root = existing
+    }
+    var providers = root["providers"] as? [String: Any] ?? [:]
+    providers["workbuddy"] = piWorkBuddyProvider(models: models)
+    root["providers"] = providers
+    try files.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+    try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+}
+
+/// Pi 的入口脚本，优先用 T3 Code 已经指向的那个运行时。
+func piBinaryCandidates() -> [String] {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let t3Pi = home + "/.pi/workbuddy-runtime/node_modules/.bin/pi"
+    return [t3Pi, home + "/.pi/workbuddy-runtime/node_modules/" + t3PiRuntimePackage + "/dist/bundle/cli.js",
+            "/opt/homebrew/bin/pi", "/usr/local/bin/pi"]
+}
+
+func installedPiBinary() -> String? {
+    piBinaryCandidates().first { FileManager.default.isExecutableFile(atPath: $0) }
+}
+
+/// 确保本机有可用的 Pi：已有就直接用，否则把官方包装到 helper 自己的运行时目录。
+func ensurePiBinary() throws -> String {
+    if let existing = installedPiBinary() { return existing }
+    guard let npm = executable(named: "npm") else {
+        throw WorkBuddyError.message("未找到 npm，请先安装 Node.js：\(openCodexInstallCommand)")
+    }
+    let runtime = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pi/workbuddy-runtime")
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: npm)
+    process.arguments = ["install", "--prefix", runtime.path, "--no-fund", "--no-audit", "\(t3PiRuntimePackage)@1"]
+    var environment = ProcessInfo.processInfo.environment
+    environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
+    process.environment = environment
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0,
+          FileManager.default.isExecutableFile(atPath: runtime.appendingPathComponent("node_modules/.bin/pi").path) else {
+        throw WorkBuddyError.message("安装 Pi 运行时失败：" + String(decoding: data, as: UTF8.self).suffix(400))
+    }
+    return runtime.appendingPathComponent("node_modules/.bin/pi").path
+}
+
+/// 写入 T3 Code 的 pi provider 实例，保留其他设置与实例。
+func importWorkBuddyT3Code(models: [WorkBuddyModel], piBinary: String, settings: URL = t3CodeStateURL(),
+                           piDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pi/agent")) throws {
+    let files = FileManager.default
+    try writePiWorkBuddyModels(models, directory: piDirectory)
+    var root: [String: Any] = [:]
+    if files.fileExists(atPath: settings.path) {
+        guard let existing = try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any] else {
+            throw WorkBuddyError.message("T3 Code 的 settings.json 格式无效：\(settings.path)")
+        }
+        root = existing
+    }
+    var instances = root["providerInstances"] as? [String: Any] ?? [:]
+    instances["workbuddy"] = [
+        "driver": "pi", "displayName": "WorkBuddy", "enabled": true,
+        "config": ["binaryPath": piBinary, "launchArgs": "--approve"],
+    ]
+    root["providerInstances"] = instances
+    try files.createDirectory(at: settings.deletingLastPathComponent(),
+                              withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]).write(to: settings, options: .atomic)
+}
+
+private func selfTestWorkBuddyT3CodeImport() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let settings = root.appendingPathComponent("userdata/settings.json")
+    let pi = root.appendingPathComponent("pi")
+    try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(#"{"providerInstances":{"cursor":{"driver":"cursor","enabled":true}},"defaultThreadEnvMode":"worktree"}"#.utf8)
+        .write(to: settings)
+    try FileManager.default.createDirectory(at: pi, withIntermediateDirectories: true)
+    try Data(#"{"providers":{"other":{"baseUrl":"http://x/v1","api":"openai-completions"}}}"#.utf8)
+        .write(to: pi.appendingPathComponent("models.json"))
+
+    let models = [WorkBuddyModel(["id": "chat-a", "name": "Chat A", "maxInputTokens": 300_000,
+                                  "maxOutputTokens": 48_000, "supportsReasoning": true,
+                                  "supportsImages": true, "supportsToolCall": true])!,
+                  WorkBuddyModel(["id": "plain-b", "name": "Plain B"])!,
+                  WorkBuddyModel(["id": "img-c", "name": "Image", "tags": ["image"]])!]
+    try importWorkBuddyT3Code(models: models, piBinary: "/bin/pi", settings: settings, piDirectory: pi)
+    try importWorkBuddyT3Code(models: models, piBinary: "/bin/pi", settings: settings, piDirectory: pi)
+
+    let t3 = try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as! [String: Any]
+    let instances = t3["providerInstances"] as! [String: Any]
+    precondition(Set(instances.keys) == ["cursor", "workbuddy"])
+    let buddy = instances["workbuddy"] as! [String: Any]
+    precondition(buddy["driver"] as? String == "pi" && buddy["enabled"] as? Bool == true)
+    let config = buddy["config"] as! [String: Any]
+    precondition(config["binaryPath"] as? String == "/bin/pi" && config["launchArgs"] as? String == "--approve")
+    precondition(t3["defaultThreadEnvMode"] as? String == "worktree")
+
+    let modelsFile = try JSONSerialization.jsonObject(with: Data(contentsOf: pi.appendingPathComponent("models.json"))) as! [String: Any]
+    let providers = modelsFile["providers"] as! [String: Any]
+    precondition(Set(providers.keys) == ["other", "workbuddy"])
+    let provider = providers["workbuddy"] as! [String: Any]
+    precondition(provider["baseUrl"] as? String == "http://127.0.0.1:\(WorkBuddyProxy.port)/workbuddy/v1")
+    precondition(provider["api"] as? String == "openai-completions" && provider["authHeader"] as? Bool == true)
+    let entries = provider["models"] as! [[String: Any]]
+    precondition(entries.map { $0["id"] as? String } == ["chat-a", "plain-b"], "Only chat models are importable")
+    precondition(entries[0]["contextWindow"] as? Int == 300_000 && entries[0]["maxTokens"] as? Int == 48_000)
+    precondition(entries[0]["reasoning"] as? Bool == true && entries[0]["input"] as? [String] == ["text", "image"])
+    precondition(entries[0]["thinkingLevelMap"] as? [String: String] == ["max": "max"])
+    precondition(entries[1]["reasoning"] as? Bool == false && entries[1]["input"] == nil)
+    precondition(entries[1]["thinkingLevelMap"] == nil)
+}
+
 private func selfTestWorkBuddyClaudeDesktopImport() throws {
     let library = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: library) }
@@ -190,21 +348,6 @@ private func selfTestWorkBuddyClaudeDesktopImport() throws {
     precondition(updated["defaultModelEffort"] as? String == "high")
 }
 
-func traeOcxConfigurationCommands(firstConfiguration: Bool) -> [[String]] {
-    var commands = [
-        ["provider", "add", "trae", "--adapter", "openai-chat",
-         "--base-url", "http://127.0.0.1:\(WorkBuddyProxy.port)\(traeAPIPrefix)", "--api-key", TraeClient.apiKey,
-         "--allow-private-network", "--force"],
-        ["restart"],
-        ["restore", "back"]
-    ]
-    if firstConfiguration {
-        commands += [["sync"], ["models", "provider", "trae", "on"]]
-    }
-    commands.append(["sync", "--restart-codex"])
-    return commands
-}
-
 func workBuddyCurlExample(model: String) -> String {
     let body = String(data: try! workBuddyJSONData([
         "model": model, "messages": [["role": "user", "content": "Hello"]], "stream": true
@@ -217,28 +360,11 @@ func workBuddyCurlExample(model: String) -> String {
     ].joined(separator: "\n")
 }
 
-func traeCurlExample(model: String) -> String {
-    let body = String(data: try! workBuddyJSONData([
-        "model": model, "messages": [["role": "user", "content": "Hello"]], "stream": true
-    ]), encoding: .utf8)!.replacingOccurrences(of: "'", with: "'\\''")
-    return [
-        "curl -N http://127.0.0.1:\(WorkBuddyProxy.port)\(traeAPIPrefix)/chat/completions \\",
-        "  -H 'Authorization: Bearer \(TraeClient.apiKey)' \\",
-        "  -H 'Content-Type: application/json' \\",
-        "  -d '\(body)'"
-    ].joined(separator: "\n")
-}
-
 func shouldAutoCheckinWorkBuddy(_ state: WorkBuddyAccountState, lastAttempt: Double?, now: Date = Date()) -> Bool {
     let attemptedToday = lastAttempt.map {
         Calendar.current.isDate(Date(timeIntervalSince1970: $0), inSameDayAs: now)
     } ?? false
     return state.checkinActive && !state.checkedIn && !attemptedToday
-}
-
-func shouldAutoCheckinTrae(_ state: TraeCheckinState, lastAttempt: Double?, now: Date = Date()) -> Bool {
-    let recentlyAttempted = lastAttempt.map { now.timeIntervalSince1970 - $0 < 600 } ?? false
-    return state.checkinActive && !state.checkedIn && !state.didCheckedIn && !recentlyAttempted
 }
 
 func modelLatencyTier(_ seconds: Double) -> Int { seconds < 2 ? 0 : (seconds < 5 ? 1 : 2) }
@@ -532,11 +658,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
     let workBuddyAccounts = WorkBuddyAccountPool()
     lazy var workBuddyClient = WorkBuddyClient(accounts: workBuddyAccounts)
-    let traeAccounts = TraeAccountPool()
-    lazy var traeClient = TraeClient(accounts: traeAccounts)
     lazy var workBuddySearchClient = WorkBuddySearchClient(accounts: workBuddyAccounts)
     lazy var workBuddyProxy = WorkBuddyProxy(client: workBuddyClient, searchClient: workBuddySearchClient,
-                                            traeClient: traeClient, autoToolsEnabled: { [weak self] in
+                                            autoToolsEnabled: { [weak self] in
         self?.workBuddyAutoSearchEnabled ?? false
     })
     var status: NSStatusItem!
@@ -556,11 +680,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     private var tokenEndPicker: NSDatePicker?
     var timer: Timer?
     var workBuddyTimer: Timer?
-    var traeTimer: Timer?
     var settingsWindow: NSWindow?
     var intervalField: NSTextField?
     var workBuddyEnabledButton: NSButton?
-    var traeEnabledButton: NSButton?
     var openCodexEnabledButton: NSButton?
     var usageCloudEnabledButton: NSButton?
     var settingsSaveButton: NSButton?
@@ -568,21 +690,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var ocxStatusItem: NSMenuItem?
     var ocxActionItems: [NSMenuItem] = []
     var ocxWorkBuddyConfigItem: NSMenuItem?
-    var ocxTraeConfigItem: NSMenuItem?
     var ocxBusy = false
     var ocxChecking = false
     var workBuddyState: WorkBuddyAccountState?
     var workBuddyModels: [WorkBuddyModel] = []
     var workBuddyError: String?
     var workBuddyBusy = false
-    var traeModels: [TraeModel] = []
+    var t3CodeBusy = false
     private var modelLatencies: [String: ModelLatency] = [:]
     private var menuTracking = false
-    var traeState: TraeCheckinState?
-    var traeCreditsByAccount: [String: TraeCredits] = [:]
-    var traeError: String?
-    var traeBusy = false
     var featureDefaults = UserDefaults.standard
+    let importQueue = DispatchQueue(label: "local.codex.helper.t3-import")
     var workBuddyEnabled: Bool {
         featureDefaults.bool(forKey: "workBuddyEnabled")
     }
@@ -590,25 +708,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         get { featureDefaults.object(forKey: "workBuddyAutoSearchEnabled") as? Bool ?? true }
         set { featureDefaults.set(newValue, forKey: "workBuddyAutoSearchEnabled") }
     }
-    var traeEnabled: Bool {
-        featureDefaults.bool(forKey: "traeEnabled")
-    }
     var openCodexEnabled: Bool {
         featureDefaults.bool(forKey: "openCodexEnabled")
     }
     var usageCloudEnabled: Bool { featureDefaults.bool(forKey: "usageCloudEnabled") }
     private var usageDevice: String? { featureDefaults.string(forKey: "usageDevice") }
-    // 两条路由各自判断：开的那个能用就起 listener，两个都不可用才停。
     var workBuddyRouteAvailable: Bool { workBuddyEnabled && workBuddyCLIInstalled }
-    // 池里已有账号时，即使本机 storage.json 不在也仍可服务（Token 已保存在账号池）。
-    var traeRouteAvailable: Bool {
-        traeEnabled && (traeInstalled || traeLoggedIn || !traeAccounts.summaries.isEmpty)
-    }
     var autoCheckin: Bool {
         UserDefaults.standard.bool(forKey: "workBuddyAutoCheckin")
-    }
-    var traeAutoCheckin: Bool {
-        UserDefaults.standard.bool(forKey: "traeAutoCheckin")
     }
     var refreshInterval: TimeInterval {
         let saved = UserDefaults.standard.double(forKey: "refreshInterval")
@@ -631,22 +738,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         refreshOcxStatus()
         resetTimer()
         resetWorkBuddyTimer()
-        resetTraeTimer()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refresh), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workBuddyWake), name: NSWorkspace.didWakeNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(traeWake), name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         workBuddyTimer?.invalidate()
-        traeTimer?.invalidate()
         workBuddyProxy.stop()
     }
 
-    // 路由开关与 listener 生命周期绑定；任一上游可用就保持 listener。
+    // 路由开关与 listener 生命周期绑定。
     func applyProxyRouteState() {
         try? workBuddyProxy.setWorkBuddyRunning(workBuddyRouteAvailable)
-        try? workBuddyProxy.setTraeRunning(traeRouteAvailable)
     }
 
     func resetTimer() {
@@ -657,7 +760,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     @objc func refreshAll() {
         refresh()
         if workBuddyEnabled { refreshWorkBuddy(autoClaim: true) }
-        if traeEnabled { refreshTrae(autoClaim: true) }
     }
 
     func resetWorkBuddyTimer() {
@@ -674,85 +776,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         resetWorkBuddyTimer()
     }
 
-    func resetTraeTimer() {
-        traeTimer?.invalidate()
-        traeTimer = nil
-        guard traeEnabled, traeAutoCheckin,
-              let next = Calendar.current.nextDate(after: Date(), matching: DateComponents(hour: 0, minute: 5),
-                                                   matchingPolicy: .nextTime) else { return }
-        traeTimer = Timer(fireAt: next, interval: 0, target: self,
-                          selector: #selector(scheduledTraeCheckin), userInfo: nil, repeats: false)
-        RunLoop.main.add(traeTimer!, forMode: .common)
-    }
-
-    @objc func refreshTraeNow() { refreshTrae() }
-
-    @objc func scheduledTraeCheckin() {
-        refreshTrae(autoClaim: true)
-        resetTraeTimer()
-    }
-
-    func refreshTrae(autoClaim: Bool = false) {
-        guard traeEnabled, !traeBusy else { return }
-        guard traeRouteAvailable else {
-            traeError = "未检测到 Trae 登录态，请先登录 TRAE SOLO CN"
-            render()
-            return
-        }
-        traeBusy = true
-        render()
-        let shouldAutoClaim = autoClaim && traeAutoCheckin
-        DispatchQueue.global(qos: .utility).async {
-            let models = try? self.traeClient.models()
-            let snapshot: (TraeCheckinState?, [String: TraeCredits], Error?) = {
-                do {
-                    if self.traeAccounts.summaries.isEmpty { _ = try self.traeAccounts.importCurrentAccount() }
-                } catch { return (nil, [:], error) }
-                var attempts = (UserDefaults.standard.dictionary(forKey: "traeLastAutoCheckins") ?? [:])
-                    .compactMapValues { ($0 as? NSNumber)?.doubleValue }
-                var states: [String: TraeCheckinState] = [:]
-                var credits: [String: TraeCredits] = [:]
-                var lastError: Error?
-                for account in self.traeAccounts.summaries {
-                    do {
-                        var state = try self.traeClient.checkinStatus(accountID: account.id)
-                        if shouldAutoClaim && shouldAutoCheckinTrae(state, lastAttempt: attempts[account.id]) {
-                            attempts[account.id] = Date().timeIntervalSince1970
-                            UserDefaults.standard.set(attempts, forKey: "traeLastAutoCheckins")
-                            state = try self.traeClient.claimCheckin(accountID: account.id)
-                        }
-                        states[account.id] = state
-                    } catch { lastError = error }
-                    if let value = try? self.traeClient.credits(accountID: account.id) {
-                        credits[account.id] = value
-                    }
-                }
-                let preferredID = self.traeAccounts.summaries.first(where: { $0.preferred })?.id
-                return (preferredID.flatMap { states[$0] } ?? states.values.first, credits, lastError)
-            }()
-            DispatchQueue.main.async {
-                self.traeBusy = false
-                if let models { self.traeModels = models }
-                self.traeCreditsByAccount = snapshot.1
-                if let state = snapshot.0 {
-                    self.traeState = state
-                    self.traeError = nil
-                } else {
-                    self.traeError = snapshot.2?.localizedDescription ?? "没有可用的 Trae 账号"
-                }
-                self.render()
-            }
-        }
-    }
-
     @objc func workBuddyWake() {
         refreshWorkBuddy(autoClaim: true)
         resetWorkBuddyTimer()
-    }
-
-    @objc func traeWake() {
-        refreshTrae(autoClaim: true)
-        resetTraeTimer()
     }
 
     @objc func refresh() {
@@ -1042,6 +1068,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let claudeImport = NSMenuItem(title: "导入 Claude Desktop 3P", action: #selector(importClaudeDesktop3P), keyEquivalent: "")
         claudeImport.target = self
         moreMenu.addItem(claudeImport)
+        let t3Import = NSMenuItem(title: t3CodeBusy ? "正在导入到 T3 Code…" : "导入到 T3 Code",
+                                  action: #selector(importWorkBuddyToT3Code), keyEquivalent: "")
+        t3Import.target = self
+        t3Import.isEnabled = !t3CodeBusy
+        moreMenu.addItem(t3Import)
         let autoSearch = NSMenuItem(title: "自动网页搜索", action: #selector(toggleWorkBuddyAutoSearch), keyEquivalent: "")
         autoSearch.target = self
         autoSearch.state = workBuddyAutoSearchEnabled ? .on : .off
@@ -1075,91 +1106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(moreItem)
         menu.addItem(.separator())
     }
-    if traeEnabled {
-        let traeSummaries = traeAccounts.summaries
-        let preferredID = traeSummaries.first(where: { $0.preferred })?.id
-        let balanceText = preferredID.flatMap { traeCreditsByAccount[$0]?.text } ?? "积分未知"
-        section("Trae  ·  " + (workBuddyProxy.isTraeRunning ? "运行中" : "已停止"))
-        info("当前账号剩余积分：\(balanceText)")
-        let traeAccountsItem = NSMenuItem(title: "账号池（\(traeSummaries.count)）", action: nil, keyEquivalent: "")
-        let traeAccountsMenu = NSMenu()
-        for account in traeSummaries {
-            let balance = traeCreditsByAccount[account.id]?.text ?? "积分未知"
-            let item = NSMenuItem(title: "\(account.name) · \(balance)",
-                                  action: #selector(selectTraeAccount(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = account.id
-            item.state = account.preferred ? .on : .off
-            traeAccountsMenu.addItem(item)
-        }
-        if !traeSummaries.isEmpty { traeAccountsMenu.addItem(.separator()) }
-        let importTrae = NSMenuItem(title: "保存当前 Trae 登录账号",
-                                    action: #selector(importCurrentTraeAccount), keyEquivalent: "")
-        importTrae.target = self
-        traeAccountsMenu.addItem(importTrae)
-        traeAccountsItem.submenu = traeAccountsMenu
-        menu.addItem(traeAccountsItem)
-        let traeModelsItem = NSMenuItem(title: "模型列表（\(traeModels.count)）", action: nil, keyEquivalent: "")
-        let traeModelsMenu = NSMenu()
-        traeModelsMenu.autoenablesItems = false
-        for model in traeModels {
-            traeModelsMenu.addItem(modelProbeItem(service: "trae", id: model.id,
-                                                  title: "\(model.name) · \(model.multiplier ?? "未提供倍率")"))
-        }
-        if traeModels.isEmpty {
-            let item = NSMenuItem(title: traeError ?? (traeBusy ? "正在读取…" : "暂无模型数据"),
-                                  action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            traeModelsMenu.addItem(item)
-        }
-        traeModelsItem.submenu = traeModelsMenu
-        menu.addItem(traeModelsItem)
-        let traeMoreItem = NSMenuItem(title: "更多…", action: nil, keyEquivalent: "")
-        let traeMoreMenu = NSMenu()
-        let traeProxyEnabled = NSMenuItem(title: "启用代理", action: #selector(toggleTraeProxy), keyEquivalent: "")
-        traeProxyEnabled.target = self
-        traeProxyEnabled.state = workBuddyProxy.isTraeRouteEnabled ? .on : .off
-        traeMoreMenu.addItem(traeProxyEnabled)
-        let checkinText: String
-        if let state = traeState {
-            checkinText = state.checkedIn || state.didCheckedIn
-                ? "今日已签到"
-                : "今日待签到 · +\(state.todayCredit.formatted()) 积分"
-        } else {
-            checkinText = "签到状态暂不可用"
-        }
-        let traeCheckinInfo = NSMenuItem(title: checkinText, action: nil, keyEquivalent: "")
-        traeCheckinInfo.isEnabled = false
-        traeMoreMenu.addItem(traeCheckinInfo)
-        let traeCurl = NSMenuItem(title: "复制 curl 示例", action: #selector(copyInstallInstruction(_:)), keyEquivalent: "")
-        traeCurl.target = self
-        traeCurl.representedObject = traeCurlExample(model: traeModels.first?.id ?? traeDefaultModel)
-        traeMoreMenu.addItem(traeCurl)
-        let traeClaim = NSMenuItem(title: traeState?.checkedIn == true || traeState?.didCheckedIn == true
-                                  ? "今日已签到" : "立即签到",
-                                   action: #selector(claimTraeCheckin), keyEquivalent: "")
-        traeClaim.target = self
-        traeClaim.isEnabled = !traeBusy && traeState?.checkedIn != true
-            && traeState?.didCheckedIn != true && traeState?.checkinActive == true
-        traeMoreMenu.addItem(traeClaim)
-        let traeAutomatic = NSMenuItem(title: "每日自动签到", action: #selector(toggleTraeAutoCheckin),
-                                       keyEquivalent: "")
-        traeAutomatic.target = self
-        traeAutomatic.state = traeAutoCheckin ? .on : .off
-        traeMoreMenu.addItem(traeAutomatic)
-        let traeRefresh = NSMenuItem(title: traeBusy ? "正在刷新…" : "刷新签到与模型",
-                                     action: #selector(refreshTraeNow), keyEquivalent: "")
-        traeRefresh.target = self
-        traeRefresh.isEnabled = !traeBusy
-        traeMoreMenu.addItem(traeRefresh)
-        traeMoreItem.submenu = traeMoreMenu
-        menu.addItem(traeMoreItem)
-        menu.addItem(.separator())
-    }
     ocxStatusItem = nil
     ocxActionItems = []
     ocxWorkBuddyConfigItem = nil
-    ocxTraeConfigItem = nil
     if openCodexEnabled {
         ocxStatusItem = section(ocxStatusText)
         ocxActionItems = [
@@ -1185,16 +1134,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         } else {
             ocxWorkBuddyConfigItem = nil
         }
-    if traeEnabled {
-        let configureTraeItem = NSMenuItem(title: "配置 / 刷新 Trae 代理", action: #selector(configureOcxTrae), keyEquivalent: "")
-        configureTraeItem.target = self
-        configureTraeItem.toolTip = "写入 Trae provider 并同步模型；重复点击可刷新配置"
-        configureTraeItem.isEnabled = !ocxBusy && ocxInstalled && traeRouteAvailable
-        ocxMoreMenu.addItem(configureTraeItem)
-        ocxTraeConfigItem = configureTraeItem
-    } else {
-        ocxTraeConfigItem = nil
-    }
         ocxMoreMenu.addItem(.separator())
         let exportItem = NSMenuItem(title: "导出配置到下载目录", action: #selector(exportOcxConfig), keyEquivalent: "")
         exportItem.target = self
@@ -1238,7 +1177,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         refreshTokenUsage()
         if !ocxBusy { refreshOcxStatus() }
         if workBuddyEnabled, !workBuddyBusy { refreshWorkBuddy(autoClaim: true) }
-        if traeEnabled, !traeBusy { refreshTrae(autoClaim: true) }
     }
 
     @objc func toggleDebugMode() {
@@ -1296,8 +1234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
         if service == "workbuddy" {
             workBuddyClient.chat(request, onStart: {}, onData: onData, completion: completion)
-        } else if service == "trae" {
-            traeClient.chat(request, onStart: {}, onData: onData, completion: completion)
         }
     }
 
@@ -1410,59 +1346,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         alert.runModal()
     }
 
-    @objc func toggleTraeProxy() {
-        guard traeRouteAvailable else { return }
-        try? workBuddyProxy.setTraeRunning(!workBuddyProxy.isTraeRouteEnabled)
-        render()
-    }
-
-    @objc func importCurrentTraeAccount() {
-        let result = Result { try traeAccounts.importCurrentAccount() }
-        let alert = NSAlert()
-        switch result {
-        case .success(let account):
-            alert.messageText = "Trae 账号已保存"
-            alert.informativeText = account.name
-            refreshTrae()
-        case .failure(let error):
-            alert.alertStyle = .warning
-            alert.messageText = "保存账号失败"
-            alert.informativeText = error.localizedDescription
+    @objc func importWorkBuddyToT3Code() {
+        guard workBuddyEnabled, !t3CodeBusy else { return }
+        let proxyWasEnabled = workBuddyProxy.isWorkBuddyRouteEnabled
+        var models: [WorkBuddyModel] = []
+        do {
+            guard workBuddyRouteAvailable else { throw WorkBuddyError.message("请先安装并登录 WorkBuddy") }
+            try workBuddyProxy.setWorkBuddyRunning(true)
+            models = (try? workBuddyClient.models()) ?? workBuddyModels
+            guard !models.isEmpty else { throw WorkBuddyError.message("未读到 WorkBuddy 模型列表，请刷新后重试") }
+        } catch {
+            if !proxyWasEnabled { try? workBuddyProxy.setWorkBuddyRunning(false) }
+            showT3CodeImportResult(.failure(error))
+            return
         }
-        alert.runModal()
+        // npm 安装 Pi 可能耗时数十秒，不能阻塞菜单。
+        t3CodeBusy = true
         render()
-    }
-
-    @objc func selectTraeAccount(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        try? traeAccounts.prefer(id)
-        refreshTrae()
-        render()
-    }
-
-    @objc func claimTraeCheckin() {
-        guard traeEnabled, !traeBusy else { return }
-        traeBusy = true
-        render()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try self.traeClient.claimCheckin() }
+        let installed = t3CodeInstalled
+        importQueue.async { [weak self] in
+            let result = Result {
+                let piBinary = try ensurePiBinary()
+                try importWorkBuddyT3Code(models: models, piBinary: piBinary)
+            }
             DispatchQueue.main.async {
-                self.traeBusy = false
-                switch result {
-                case .success(let state): self.traeState = state; self.traeError = nil
-                case .failure(let error): self.traeError = error.localizedDescription
-                }
-                self.render()
+                guard let self else { return }
+                self.t3CodeBusy = false
+                if case .failure = result, !proxyWasEnabled { try? self.workBuddyProxy.setWorkBuddyRunning(false) }
+                self.showT3CodeImportResult(result, models: models, t3Installed: installed)
             }
         }
     }
 
-    @objc func toggleTraeAutoCheckin() {
-        guard traeEnabled else { return }
-        UserDefaults.standard.set(!traeAutoCheckin, forKey: "traeAutoCheckin")
-        resetTraeTimer()
+    func showT3CodeImportResult(_ result: Result<Void, Error>, models: [WorkBuddyModel] = [],
+                                t3Installed: Bool = true) {
+        let alert = NSAlert()
+        switch result {
+        case .success:
+            let chatCount = models.filter { $0.type == "chat" }.count
+            alert.messageText = "已导入到 T3 Code"
+            alert.informativeText = "已写入 WorkBuddy provider（Pi 驱动，\(chatCount) 个对话模型）并指向本机代理。"
+                + (t3Installed ? "重新打开 T3 Code 后生效。" : "未检测到 T3 Code，装好后打开即可看到 WorkBuddy。")
+        case .failure(let error):
+            alert.alertStyle = .warning
+            alert.messageText = "导入到 T3 Code 失败"
+            alert.informativeText = error.localizedDescription
+        }
         render()
-        if traeAutoCheckin { refreshTrae(autoClaim: true) }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc func importCurrentWorkBuddyAccount() {
@@ -1594,24 +1526,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 530),
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 466),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Helper 设置"
         window.isReleasedWhenClosed = false
         window.center()
         guard let content = window.contentView else { return }
-        content.addSubview(symbol("slider.horizontal.3", frame: NSRect(x: 24, y: 461, width: 38, height: 38)))
-        content.addSubview(label("偏好设置", frame: NSRect(x: 76, y: 478, width: 360, height: 29), size: 23, weight: .semibold))
-        content.addSubview(label("按你的工作方式，配置 Helper。", frame: NSRect(x: 76, y: 456, width: 360, height: 18), size: 12, color: .secondaryLabelColor))
-        content.addSubview(label("集成服务", frame: NSRect(x: 26, y: 416, width: 410, height: 20), size: 12, weight: .semibold, color: .secondaryLabelColor))
-        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 148, width: 412, height: 258)))
+        content.addSubview(symbol("slider.horizontal.3", frame: NSRect(x: 24, y: 397, width: 38, height: 38)))
+        content.addSubview(label("偏好设置", frame: NSRect(x: 76, y: 414, width: 360, height: 29), size: 23, weight: .semibold))
+        content.addSubview(label("按你的工作方式，配置 Helper。", frame: NSRect(x: 76, y: 392, width: 360, height: 18), size: 12, color: .secondaryLabelColor))
+        content.addSubview(label("集成服务", frame: NSRect(x: 26, y: 352, width: 410, height: 20), size: 12, weight: .semibold, color: .secondaryLabelColor))
+        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 156, width: 412, height: 186)))
 
         let workBuddy = NSButton(checkboxWithTitle: "启用 WorkBuddy 功能", target: self, action: #selector(settingsChanged))
         workBuddy.state = workBuddyEnabled ? .on : .off
         workBuddyEnabledButton = workBuddy
-        let trae = NSButton(checkboxWithTitle: "启用 Trae 代理", target: self, action: #selector(settingsChanged))
-        trae.state = traeEnabled ? .on : .off
-        traeEnabledButton = trae
         let openCodex = NSButton(checkboxWithTitle: "启用 OpenCodex 功能", target: self, action: #selector(settingsChanged))
         openCodex.state = openCodexEnabled ? .on : .off
         openCodex.toolTip = "检测 OpenCodex 安装、运行状态并显示相关操作"
@@ -1622,12 +1551,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         usageCloudEnabledButton = cloud
         let integrations: [(NSButton, String)] = [
             (workBuddy, "管理账号、积分与本地模型代理"),
-            (trae, "连接 Trae 模型与独立账号池"),
             (openCodex, "查看运行状态、配置与控制代理"),
             (cloud, "跨设备汇总统计，不同步对话内容")
         ]
         for (index, entry) in integrations.enumerated() {
-            let y = CGFloat(372 - index * 62)
+            let y = CGFloat(308 - index * 62)
             entry.0.frame = NSRect(x: 40, y: y, width: 376, height: 22)
             entry.0.font = .systemFont(ofSize: 13, weight: .medium)
             content.addSubview(entry.0)
@@ -1638,11 +1566,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 content.addSubview(line)
             }
         }
-        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 70, width: 412, height: 64)))
-        content.addSubview(label("自动刷新", frame: NSRect(x: 40, y: 105, width: 200, height: 18), weight: .medium))
-        content.addSubview(label("每 5–3600 秒更新一次额度", frame: NSRect(x: 40, y: 84, width: 220, height: 17), size: 11, color: .secondaryLabelColor))
+        content.addSubview(CardSurface(frame: NSRect(x: 24, y: 78, width: 412, height: 64)))
+        content.addSubview(label("自动刷新", frame: NSRect(x: 40, y: 113, width: 200, height: 18), weight: .medium))
+        content.addSubview(label("每 5–3600 秒更新一次额度", frame: NSRect(x: 40, y: 92, width: 220, height: 17), size: 11, color: .secondaryLabelColor))
         let field = NSTextField(string: String(Int(refreshInterval)))
-        field.frame = NSRect(x: 310, y: 89, width: 70, height: 26)
+        field.frame = NSRect(x: 310, y: 97, width: 70, height: 26)
         field.alignment = .right
         field.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
         field.formatter = NumberFormatter()
@@ -1650,16 +1578,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         field.setAccessibilityLabel("刷新间隔秒数")
         intervalField = field
         content.addSubview(field)
-        content.addSubview(label("秒", frame: NSRect(x: 390, y: 92, width: 28, height: 20), color: .secondaryLabelColor))
+        content.addSubview(label("秒", frame: NSRect(x: 390, y: 100, width: 28, height: 20), color: .secondaryLabelColor))
         let save = NSButton(title: "保存设置", target: self, action: #selector(saveSettings))
-        save.frame = NSRect(x: 334, y: 20, width: 102, height: 32)
+        save.frame = NSRect(x: 334, y: 24, width: 102, height: 32)
         save.bezelStyle = .rounded
         save.keyEquivalent = "\r"
         settingsSaveButton = save
         content.addSubview(save)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知"
-        content.addSubview(label("Codex Helper \(version) · Build \(build)", frame: NSRect(x: 26, y: 26, width: 300, height: 18), size: 11, color: .secondaryLabelColor))
+        content.addSubview(label("Codex Helper \(version) · Build \(build)", frame: NSRect(x: 26, y: 30, width: 300, height: 18), size: 11, color: .secondaryLabelColor))
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -1680,15 +1608,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         UserDefaults.standard.set(value, forKey: "refreshInterval")
     let enabled = workBuddyEnabledButton?.state == .on
     featureDefaults.set(enabled, forKey: "workBuddyEnabled")
-    let traeOn = traeEnabledButton?.state == .on
-    featureDefaults.set(traeOn, forKey: "traeEnabled")
     featureDefaults.set(openCodexEnabledButton?.state == .on, forKey: "openCodexEnabled")
     featureDefaults.set(usageCloudEnabledButton?.state == .on, forKey: "usageCloudEnabled")
     tokenUsage = nil
     refreshTokenUsage()
     field.stringValue = String(Int(value))
     resetTimer()
-    // 两条路由各自按自己的开关与上游可用性生效，互不影响。
     if enabled, workBuddyCLIInstalled {
         refreshWorkBuddy()
         resetWorkBuddyTimer()
@@ -1698,18 +1623,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         workBuddyState = nil
         workBuddyModels = []
         workBuddyError = nil
-    }
-    if traeRouteAvailable {
-        refreshTrae()
-        resetTraeTimer()
-    } else {
-        // 关闭 Trae 时清空它自己的临时 UI 状态，WorkBuddy 不受影响。
-        traeTimer?.invalidate()
-        traeTimer = nil
-        traeState = nil
-        traeCreditsByAccount = [:]
-        traeModels = []
-        traeError = nil
     }
     applyProxyRouteState()
     refreshOcxStatus()
@@ -1725,7 +1638,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let ocxInstalled = openCodexEnabled && executable(named: "ocx") != nil
     ocxActionItems.forEach { $0.isEnabled = !busy && ocxInstalled }
     ocxWorkBuddyConfigItem?.isEnabled = !busy && ocxInstalled && workBuddyCLIInstalled
-    ocxTraeConfigItem?.isEnabled = !busy && ocxInstalled && traeRouteAvailable
         if let message {
             ocxStatusText = message
             ocxStatusItem?.title = message
@@ -1811,24 +1723,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
     }
 
-    @objc func configureOcxTrae() {
-        guard openCodexEnabled, traeRouteAvailable, executable(named: "ocx") != nil else {
-            render()
-            return
-        }
-        do { try workBuddyProxy.setTraeRunning(true) }
-        catch {
-            showOcxTransferResult(.failure(error), success: "", detail: "")
-            return
-        }
-        let firstConfiguration = (try? runCommand("ocx", ["provider", "show", "trae", "--json"])) == nil
-        runOcx(traeOcxConfigurationCommands(firstConfiguration: firstConfiguration),
-               progress: "正在配置 Trae…", success: "Trae 已配置") { result in
-            self.showOcxTransferResult(result, success: "Trae 代理已配置",
-                                       detail: "模型已经同步到 Codex；再次点击可刷新配置。")
-        }
-    }
-
     func showOcxTransferResult(_ result: Result<Void, Error>, success: String, detail: String) {
         let alert = NSAlert()
         switch result {
@@ -1888,21 +1782,22 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!reopenedSettings.workBuddyAutoSearchEnabled)
     reopenedSettings.workBuddyAutoSearchEnabled = true
     precondition(settingsDelegate.workBuddyAutoSearchEnabled)
-    precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.traeEnabled && !settingsDelegate.openCodexEnabled && !settingsDelegate.usageCloudEnabled)
-    precondition(!settingsDelegate.workBuddyRouteAvailable && !settingsDelegate.traeRouteAvailable)
+    precondition(!settingsDelegate.workBuddyEnabled && !settingsDelegate.openCodexEnabled && !settingsDelegate.usageCloudEnabled)
+    precondition(!settingsDelegate.workBuddyRouteAvailable)
     settingsDelegate.ocxStatusText = "unchecked"
     settingsDelegate.refreshOcxStatus()
     settingsDelegate.runOcx([["--version"]], progress: "unexpected", success: "unexpected")
     precondition(!settingsDelegate.ocxChecking && !settingsDelegate.ocxBusy && settingsDelegate.ocxStatusText == "unchecked")
-    featureDefaults.setVolatileDomain(["workBuddyEnabled": true, "traeEnabled": true, "openCodexEnabled": true],
+    featureDefaults.setVolatileDomain(["workBuddyEnabled": true, "openCodexEnabled": true],
                                      forName: UserDefaults.argumentDomain)
-    precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.traeEnabled && settingsDelegate.openCodexEnabled)
+    precondition(settingsDelegate.workBuddyEnabled && settingsDelegate.openCodexEnabled)
     try CodexTokenUsageReader.selfTest()
     try CodexQuotaHistory.selfTest()
     try CodexResponseTimingReader.selfTest()
     try CodexBackgroundUsageReader.selfTest()
     try CodexUsageSync.selfTest()
     try selfTestWorkBuddyClaudeDesktopImport()
+    try selfTestWorkBuddyT3CodeImport()
     let sample = #"{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300},"secondary":{"usedPercent":6,"windowDurationMins":10080,"resetsAt":1789368213},"planType":"plus"}}}"#
     let parsed = try JSONDecoder().decode(Quota.self, from: Data(sample.utf8))
     precondition(parsed.title == "5h: 100% · 1w: 94%")
@@ -1940,15 +1835,6 @@ if CommandLine.arguments.contains("--self-test") {
                                                 checkinActive: true, todayCredit: 1, streakDays: 0)
     precondition(shouldAutoCheckinWorkBuddy(pendingCheckin, lastAttempt: nil))
     precondition(!shouldAutoCheckinWorkBuddy(pendingCheckin, lastAttempt: Date().timeIntervalSince1970))
-    let pendingTraeCheckin = TraeCheckinState(checkedIn: false, didCheckedIn: false, checkinActive: true,
-                                              baseCredit: 150, bonusCredit: 50)
-    precondition(shouldAutoCheckinTrae(pendingTraeCheckin, lastAttempt: nil))
-    precondition(!shouldAutoCheckinTrae(pendingTraeCheckin, lastAttempt: Date().timeIntervalSince1970))
-    precondition(shouldAutoCheckinTrae(pendingTraeCheckin,
-                                      lastAttempt: Date().addingTimeInterval(-601).timeIntervalSince1970))
-    precondition(!shouldAutoCheckinTrae(TraeCheckinState(checkedIn: true, didCheckedIn: true,
-                                                        checkinActive: true, baseCredit: 0, bonusCredit: 0),
-                                       lastAttempt: nil))
     precondition(modelLatencyTier(1.99) == 0 && modelLatencyTier(2) == 1)
     precondition(modelLatencyTier(4.99) == 1 && modelLatencyTier(5) == 2)
     let cleanHealth = try runCommand("sh", ["-c", "printf '%s' '{\"ok\":true}'; printf '%s' warning >&2"],
@@ -1960,15 +1846,6 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!setup.first!.joined(separator: " ").contains(":58100/v1 "))
     precondition(workBuddyCurlExample(model: "test-model").contains("/workbuddy/v1/chat/completions"))
     precondition(workBuddyCurlExample(model: "test-model").contains("Bearer workbuddy-local"))
-    precondition(traeOcxConfigurationCommands(firstConfiguration: true).first?.joined(separator: " ")
-        .contains("http://127.0.0.1:58100/trae/v1") == true)
-    let traeSetup = traeOcxConfigurationCommands(firstConfiguration: true)
-    precondition(traeSetup.first?.joined(separator: " ").contains("http://127.0.0.1:58100/trae/v1") == true)
-    precondition(traeSetup.contains(["models", "provider", "trae", "on"]))
-    precondition(traeSetup.last == ["sync", "--restart-codex"])
-    precondition(traeOcxConfigurationCommands(firstConfiguration: false).count == 4)
-    precondition(traeCurlExample(model: "test-model").contains("/trae/v1/chat/completions"))
-    precondition(traeCurlExample(model: "test-model").contains("Bearer trae-local"))
     precondition(workBuddyRotationCredits(previousBalance: nil, currentBalance: 2500, accumulated: 0) == 0)
     precondition(workBuddyRotationCredits(previousBalance: 2500, currentBalance: 2440, accumulated: 45) == 105)
     precondition(workBuddyRotationCredits(previousBalance: 2440, currentBalance: 2500, accumulated: 45) == 45)
@@ -1977,9 +1854,7 @@ if CommandLine.arguments.contains("--self-test") {
     WorkBuddySearchClient.selfTest()
     WorkBuddyProxy.selfTest()
     try ProxyDebugLog.selfTest()
-    TraeClient.selfTest()
-    TraeAccountPool.selfTest()
-    print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 Trae Chat 翻译")
+    print("PASS: 配额解析、本地 Token 统计、账号限流识别、WorkBuddy Chat 转发与 T3 Code 导入")
 } else if CommandLine.arguments.contains("--check-token-usage") {
     let quota = try? readQuota()
     let weeklyRange = quota?.weeklyRange()
@@ -2009,11 +1884,9 @@ if CommandLine.arguments.contains("--self-test") {
     } else if CommandLine.arguments.contains("--serve-proxy") {
         let accounts = WorkBuddyAccountPool()
         let client = WorkBuddyClient(accounts: accounts)
-        let traeAccounts = TraeAccountPool()
-        let proxy = WorkBuddyProxy(client: client, searchClient: WorkBuddySearchClient(accounts: accounts), traeClient: TraeClient(accounts: traeAccounts))
-        // 由 set* 决定是否真的监听：两个路由都关时不应占用端口。
+        let proxy = WorkBuddyProxy(client: client, searchClient: WorkBuddySearchClient(accounts: accounts))
+        // 由 setWorkBuddyRunning 决定是否真的监听：关闭时不占用端口。
         try proxy.setWorkBuddyRunning(ProcessInfo.processInfo.environment["CODEX_HELPER_WORKBUDDY"] != "0")
-        try proxy.setTraeRunning(ProcessInfo.processInfo.environment["CODEX_HELPER_TRAE"] != "0")
         print("Chat proxy listening on 127.0.0.1:\(WorkBuddyProxy.port)")
         RunLoop.main.run()
 } else if CommandLine.arguments.contains("--check") {
